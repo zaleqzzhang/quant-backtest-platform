@@ -1,0 +1,13 @@
+tushare>=1.2.62
+longport>=3.0.0
+pandas>=1.3.0
+numpy>=1.21.0
+matplotlib>=3.3.0
+seaborn>=0.11.0
+python-dateutil>=2.8.0
+requests>=2.25.0
+lxml>=4.6.0
+simplejson>=3.17.0
+bs4>=0.0.1
+websocket-client>=0.57.0
+tqdm>=4.60.0
