@@ -94,7 +94,8 @@ class BacktestEngine:
     """
     
     def __init__(self, initial_capital: float = 100000.0, commission_rate: float = 0.001, 
-                 warmup_period: int = 100, fixed_quantity: int = None, max_position: int = None):
+                 warmup_period: int = 100, fixed_quantity: int = None, max_position: int = None,
+                 fixed_buy_quantity: int = None, fixed_sell_quantity: int = None):
         """
         初始化回测引擎
         
@@ -104,12 +105,16 @@ class BacktestEngine:
         warmup_period: 预热期长度（交易日数量）
         fixed_quantity: 固定交易数量（如果为None，则使用动态仓位）
         max_position: 最大持仓数量（如果为None，则无限制）
+        fixed_buy_quantity: 固定买入数量（如果为None，则使用fixed_quantity或动态仓位）
+        fixed_sell_quantity: 固定卖出数量（如果为None，则使用fixed_quantity或动态仓位）
         """
         self.initial_capital = initial_capital
         self.commission_rate = commission_rate
         self.warmup_period = warmup_period
         self.fixed_quantity = fixed_quantity
         self.max_position = max_position
+        self.fixed_buy_quantity = fixed_buy_quantity
+        self.fixed_sell_quantity = fixed_sell_quantity
         self.portfolio = Portfolio(cash=initial_capital)
         self.results = {}  # 存储回测结果
     
@@ -224,8 +229,12 @@ class BacktestEngine:
             if self.max_position is not None and current_position >= self.max_position:
                 return None  # 超过最大持仓限制，不买入
             
-            if self.fixed_quantity is not None:
-                # 使用固定交易数量
+            # 确定使用的买入数量
+            if self.fixed_buy_quantity is not None:
+                # 使用固定的买入数量
+                position_size = self.fixed_buy_quantity
+            elif self.fixed_quantity is not None:
+                # 使用通用的固定交易数量
                 position_size = self.fixed_quantity
             else:
                 # 动态调整仓位大小，最多使用可用现金的一部分
@@ -257,8 +266,12 @@ class BacktestEngine:
         elif signal.signal_type == SignalType.SELL:
             # 检查是否有持仓可以卖出
             if symbol in self.portfolio.positions and self.portfolio.positions[symbol] > 0:
-                if self.fixed_quantity is not None:
-                    # 使用固定交易数量
+                # 确定使用的卖出数量
+                if self.fixed_sell_quantity is not None:
+                    # 使用固定的卖出数量
+                    position_size = min(self.fixed_sell_quantity, self.portfolio.positions[symbol])
+                elif self.fixed_quantity is not None:
+                    # 使用通用的固定交易数量
                     position_size = min(self.fixed_quantity, self.portfolio.positions[symbol])
                 else:
                     # 可以只卖出部分仓位

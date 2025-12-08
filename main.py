@@ -80,7 +80,9 @@ def run_single_backtest(
     commission_rate: float = 0.001,
     warmup_period: int = 100,
     fixed_quantity: int = None,
-    max_position: int = None
+    max_position: int = None,
+    fixed_buy_quantity: int = None,
+    fixed_sell_quantity: int = None
 ):
     """
     运行单个策略回测
@@ -127,11 +129,15 @@ def run_single_backtest(
         return
     
     # 创建策略实例
-    strategy = create_strategy(
-        strategy_name, short_window=short_window, long_window=long_window,
-        rsi_period=rsi_period, rsi_oversold=rsi_oversold, rsi_overbought=rsi_overbought,
-        bb_period=bb_period, bb_std_dev=bb_std_dev, index_code=index_code
-    )
+    strategy = None
+    if strategy_name == "ma":
+        strategy = MovingAverageCrossoverStrategy(short_window=short_window, long_window=long_window)
+    elif strategy_name == "rsi":
+        strategy = RSIStategy(period=rsi_period, oversold=rsi_oversold, overbought=rsi_overbought)
+    elif strategy_name == "bollinger":
+        strategy = BollingerBandsStrategy(period=bb_period, std_dev=bb_std_dev)
+    elif strategy_name == "sentiment":
+        strategy = SentimentStrategy(index_code=index_code)
     
     if strategy is None:
         print(f"未知的策略: {strategy_name}")
@@ -143,7 +149,9 @@ def run_single_backtest(
         commission_rate=commission_rate, 
         warmup_period=warmup_period,
         fixed_quantity=fixed_quantity,
-        max_position=max_position
+        max_position=max_position,
+        fixed_buy_quantity=fixed_buy_quantity,
+        fixed_sell_quantity=fixed_sell_quantity
     )
     
     # 运行回测
@@ -394,6 +402,10 @@ def main():
                        help='固定交易数量（如果不指定，则使用动态仓位）')
     parser.add_argument('--max-position', type=int, default=None, 
                        help='最大持仓数量（如果不指定，则无限制）')
+    parser.add_argument('--fixed-buy-quantity', type=int, default=None, 
+                       help='固定买入数量（如果不指定，则使用fixed-quantity或动态仓位）')
+    parser.add_argument('--fixed-sell-quantity', type=int, default=None, 
+                       help='固定卖出数量（如果不指定，则使用fixed-quantity或动态仓位）')
     
     args = parser.parse_args()
     
@@ -423,7 +435,9 @@ def main():
             commission_rate=args.commission_rate,
             warmup_period=args.warmup_period,
             fixed_quantity=args.fixed_quantity,
-            max_position=args.max_position
+            max_position=args.max_position,
+            fixed_buy_quantity=args.fixed_buy_quantity,
+            fixed_sell_quantity=args.fixed_sell_quantity
         )
     elif args.mode == 'view':
         if not all([args.symbol, args.start_date, args.end_date]):
