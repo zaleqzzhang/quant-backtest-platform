@@ -1,7 +1,4 @@
-venv/
-__pycache__/
-*.pyc
+indicators/
 .DS_Store
-*.pkl
-.vscode/
-.pytest_cache/
+__pycache__/
+data/

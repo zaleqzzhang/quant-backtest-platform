@@ -69,261 +69,471 @@ class Strategy(ABC):
 
 
 class MovingAverageCrossoverStrategy(Strategy):
-    """
-    均线交叉策略
-    当短期均线上穿长期均线时买入，下穿时卖出
-    """
-
-    def __init__(self, name: str = "MovingAverageCrossover", short_window: int = 5, long_window: int = 20):
+    """均线交叉策略"""
+    
+    def __init__(self, short_window: int = 5, long_window: int = 20, name: str = "均线交叉策略"):
         """
         初始化均线交叉策略
         
         Parameters:
-        name: 策略名称
         short_window: 短期均线窗口
         long_window: 长期均线窗口
+        name: 策略名称
         """
         super().__init__(name)
         self.short_window = short_window
         self.long_window = long_window
-
+    
     def generate_signal(self, data: pd.DataFrame) -> Signal:
         """
         生成交易信号
+        
+        Parameters:
+        data: 历史价格数据
+        
+        Returns:
+        Signal: 交易信号
         """
         if len(data) < self.long_window:
             return Signal(
-                symbol=data.iloc[-1]['symbol'] if 'symbol' in data.columns else 'unknown',
+                symbol=data['symbol'].iloc[-1] if 'symbol' in data.columns else 'unknown',
                 signal_type=SignalType.HOLD,
                 price=data['close'].iloc[-1],
-                timestamp=data.index[-1],
-                reason="数据不足"
+                timestamp=data.index[-1]
             )
-
+        
         # 计算移动平均线
         short_ma = data['close'].rolling(window=self.short_window, min_periods=1).mean()
         long_ma = data['close'].rolling(window=self.long_window, min_periods=1).mean()
-
-        # 获取最新两个时间点的均线值
-        short_current = short_ma.iloc[-1]
-        short_prev = short_ma.iloc[-2] if len(short_ma) > 1 else short_current
-        long_current = long_ma.iloc[-1]
-        long_prev = long_ma.iloc[-2] if len(long_ma) > 1 else long_current
-
-        symbol = data.iloc[-1]['symbol'] if 'symbol' in data.columns else 'unknown'
-        price = data['close'].iloc[-1]
-        timestamp = data.index[-1]
-
-        # 判断交叉情况
-        if short_prev <= long_prev and short_current > long_current:
-            # 短期均线上穿长期均线，买入信号
+        
+        # 生成信号
+        if short_ma.iloc[-2] <= long_ma.iloc[-2] and short_ma.iloc[-1] > long_ma.iloc[-1]:
+            # 金叉：短期均线上穿长期均线
+            reason = f"金叉:MA{self.short_window}上穿MA{self.long_window}"
             return Signal(
-                symbol=symbol,
+                symbol=data['symbol'].iloc[-1] if 'symbol' in data.columns else 'unknown',
                 signal_type=SignalType.BUY,
-                price=price,
-                timestamp=timestamp,
-                strength=min(1.0, (short_current - long_current) / long_current * 10),
-                reason=f"短期均线({short_current:.2f})上穿长期均线({long_current:.2f})"
+                price=data['close'].iloc[-1],
+                timestamp=data.index[-1],
+                strength=min(1.0, abs(short_ma.iloc[-1] - long_ma.iloc[-1]) / data['close'].iloc[-1]),
+                reason=reason
             )
-        elif short_prev >= long_prev and short_current < long_current:
-            # 短期均线下穿长期均线，卖出信号
+        elif short_ma.iloc[-2] >= long_ma.iloc[-2] and short_ma.iloc[-1] < long_ma.iloc[-1]:
+            # 死叉：短期均线下穿长期均线
+            reason = f"死叉:MA{self.short_window}下穿MA{self.long_window}"
             return Signal(
-                symbol=symbol,
+                symbol=data['symbol'].iloc[-1] if 'symbol' in data.columns else 'unknown',
                 signal_type=SignalType.SELL,
-                price=price,
-                timestamp=timestamp,
-                strength=min(1.0, (long_current - short_current) / long_current * 10),
-                reason=f"短期均线({short_current:.2f})下穿长期均线({long_current:.2f})"
+                price=data['close'].iloc[-1],
+                timestamp=data.index[-1],
+                strength=min(1.0, abs(short_ma.iloc[-1] - long_ma.iloc[-1]) / data['close'].iloc[-1]),
+                reason=reason
             )
         else:
-            # 无交叉，保持持有
             return Signal(
-                symbol=symbol,
+                symbol=data['symbol'].iloc[-1] if 'symbol' in data.columns else 'unknown',
                 signal_type=SignalType.HOLD,
-                price=price,
-                timestamp=timestamp,
-                reason="无交叉信号"
+                price=data['close'].iloc[-1],
+                timestamp=data.index[-1]
             )
 
 
 class RSIStategy(Strategy):
-    """
-    RSI相对强弱指数策略
-    当RSI低于超卖区时买入，高于超买区时卖出
-    """
-
-    def __init__(self, name: str = "RSIStrategy", period: int = 14, oversold: int = 30, overbought: int = 70):
+    """RSI策略"""
+    
+    def __init__(self, period: int = 14, oversold: int = 30, overbought: int = 70, name: str = "RSI策略"):
         """
         初始化RSI策略
         
         Parameters:
-        name: 策略名称
         period: RSI计算周期
         oversold: 超卖阈值
         overbought: 超买阈值
+        name: 策略名称
         """
         super().__init__(name)
         self.period = period
         self.oversold = oversold
         self.overbought = overbought
-
-    def _calculate_rsi(self, prices: pd.Series) -> float:
-        """
-        计算RSI值
-        
-        Parameters:
-        prices: 价格序列
-        
-        Returns:
-        float: RSI值
-        """
-        if len(prices) < self.period + 1:
-            return 50.0  # 数据不足时返回中性值
-
-        deltas = prices.diff().dropna()
-        gains = deltas.where(deltas > 0, 0)
-        losses = -deltas.where(deltas < 0, 0)
-
-        # 使用简单移动平均而不是滚动平均
-        avg_gain = gains.tail(self.period).mean()
-        avg_loss = losses.tail(self.period).mean()
-
-        if avg_loss == 0:
-            return 100.0
-
-        rs = avg_gain / avg_loss
-        rsi = 100 - (100 / (1 + rs))
-        return rsi
-
+    
     def generate_signal(self, data: pd.DataFrame) -> Signal:
         """
         生成交易信号
+        
+        Parameters:
+        data: 历史价格数据
+        
+        Returns:
+        Signal: 交易信号
         """
-        symbol = data.iloc[-1]['symbol'] if 'symbol' in data.columns else 'unknown'
-        price = data['close'].iloc[-1]
-        timestamp = data.index[-1]
-
-        rsi = self._calculate_rsi(data['close'])
-
-        if rsi < self.oversold:
+        if len(data) < self.period + 1:
             return Signal(
-                symbol=symbol,
-                signal_type=SignalType.BUY,
-                price=price,
-                timestamp=timestamp,
-                strength=(self.oversold - rsi) / self.oversold,
-                reason=f"RSI({rsi:.2f})进入超卖区"
+                symbol=data['symbol'].iloc[-1] if 'symbol' in data.columns else 'unknown',
+                signal_type=SignalType.HOLD,
+                price=data['close'].iloc[-1],
+                timestamp=data.index[-1]
             )
-        elif rsi > self.overbought:
+        
+        # 计算RSI
+        delta = data['close'].diff()
+        gain = (delta.where(delta > 0, 0)).rolling(window=self.period).mean()
+        loss = (-delta.where(delta < 0, 0)).rolling(window=self.period).mean()
+        rs = gain / loss
+        rsi = 100 - (100 / (1 + rs))
+        
+        current_rsi = rsi.iloc[-1]
+        prev_rsi = rsi.iloc[-2]
+        
+        # 生成信号
+        if prev_rsi <= self.oversold and current_rsi > self.oversold:
+            # RSI从超卖区回升，买入信号
+            reason = f"RSI({current_rsi:.2f})超卖回升"
             return Signal(
-                symbol=symbol,
+                symbol=data['symbol'].iloc[-1] if 'symbol' in data.columns else 'unknown',
+                signal_type=SignalType.BUY,
+                price=data['close'].iloc[-1],
+                timestamp=data.index[-1],
+                strength=min(1.0, (self.oversold - current_rsi) / self.oversold),
+                reason=reason
+            )
+        elif prev_rsi >= self.overbought and current_rsi < self.overbought:
+            # RSI从超买区回落，卖出信号
+            reason = f"RSI({current_rsi:.2f})超买回落"
+            return Signal(
+                symbol=data['symbol'].iloc[-1] if 'symbol' in data.columns else 'unknown',
                 signal_type=SignalType.SELL,
-                price=price,
-                timestamp=timestamp,
-                strength=(rsi - self.overbought) / (100 - self.overbought),
-                reason=f"RSI({rsi:.2f})进入超买区"
+                price=data['close'].iloc[-1],
+                timestamp=data.index[-1],
+                strength=min(1.0, (current_rsi - self.overbought) / (100 - self.overbought)),
+                reason=reason
             )
         else:
             return Signal(
-                symbol=symbol,
+                symbol=data['symbol'].iloc[-1] if 'symbol' in data.columns else 'unknown',
                 signal_type=SignalType.HOLD,
-                price=price,
-                timestamp=timestamp,
-                reason=f"RSI({rsi:.2f})处于正常区间"
+                price=data['close'].iloc[-1],
+                timestamp=data.index[-1]
             )
 
 
 class BollingerBandsStrategy(Strategy):
-    """
-    布林带策略
-    当价格突破布林带上轨时卖出，突破下轨时买入
-    """
-
-    def __init__(self, name: str = "BollingerBandsStrategy", period: int = 20, std_dev: int = 2):
+    """布林带策略"""
+    
+    def __init__(self, period: int = 20, std_dev: float = 2, name: str = "布林带策略"):
         """
         初始化布林带策略
         
         Parameters:
-        name: 策略名称
         period: 布林带计算周期
         std_dev: 标准差倍数
+        name: 策略名称
         """
         super().__init__(name)
         self.period = period
         self.std_dev = std_dev
-
+    
     def generate_signal(self, data: pd.DataFrame) -> Signal:
         """
         生成交易信号
+        
+        Parameters:
+        data: 历史价格数据
+        
+        Returns:
+        Signal: 交易信号
         """
         if len(data) < self.period:
             return Signal(
-                symbol=data.iloc[-1]['symbol'] if 'symbol' in data.columns else 'unknown',
+                symbol=data['symbol'].iloc[-1] if 'symbol' in data.columns else 'unknown',
                 signal_type=SignalType.HOLD,
                 price=data['close'].iloc[-1],
+                timestamp=data.index[-1]
+            )
+        
+        # 计算布林带
+        rolling_mean = data['close'].rolling(window=self.period).mean()
+        rolling_std = data['close'].rolling(window=self.period).std()
+        upper_band = rolling_mean + (rolling_std * self.std_dev)
+        lower_band = rolling_mean - (rolling_std * self.std_dev)
+        
+        current_price = data['close'].iloc[-1]
+        current_upper = upper_band.iloc[-1]
+        current_lower = lower_band.iloc[-1]
+        current_middle = rolling_mean.iloc[-1]
+        
+        prev_price = data['close'].iloc[-2]
+        prev_upper = upper_band.iloc[-2]
+        prev_lower = lower_band.iloc[-2]
+        
+        # 生成信号
+        if prev_price <= prev_lower and current_price > current_lower:
+            # 价格从下轨反弹，买入信号
+            reason = f"价格({current_price:.2f})突破下轨({current_lower:.2f})"
+            return Signal(
+                symbol=data['symbol'].iloc[-1] if 'symbol' in data.columns else 'unknown',
+                signal_type=SignalType.BUY,
+                price=current_price,
                 timestamp=data.index[-1],
-                reason="数据不足"
+                strength=min(1.0, (current_lower - current_price) / current_lower),
+                reason=reason
+            )
+        elif prev_price >= prev_upper and current_price < current_upper:
+            # 价格从上轨回落，卖出信号
+            reason = f"价格({current_price:.2f})跌破上轨({current_upper:.2f})"
+            return Signal(
+                symbol=data['symbol'].iloc[-1] if 'symbol' in data.columns else 'unknown',
+                signal_type=SignalType.SELL,
+                price=current_price,
+                timestamp=data.index[-1],
+                strength=min(1.0, (current_price - current_upper) / current_upper),
+                reason=reason
+            )
+        elif current_price > current_upper:
+            # 价格突破上轨，追高买入（较强势）
+            reason = f"价格({current_price:.2f})创新高"
+            return Signal(
+                symbol=data['symbol'].iloc[-1] if 'symbol' in data.columns else 'unknown',
+                signal_type=SignalType.BUY,
+                price=current_price,
+                timestamp=data.index[-1],
+                strength=min(1.0, (current_price - current_upper) / current_upper),
+                reason=reason
+            )
+        elif current_price < current_lower:
+            # 价格跌破下轨，杀跌卖出（较弱势）
+            reason = f"价格({current_price:.2f})创新低"
+            return Signal(
+                symbol=data['symbol'].iloc[-1] if 'symbol' in data.columns else 'unknown',
+                signal_type=SignalType.SELL,
+                price=current_price,
+                timestamp=data.index[-1],
+                strength=min(1.0, (current_lower - current_price) / current_lower),
+                reason=reason
+            )
+        else:
+            return Signal(
+                symbol=data['symbol'].iloc[-1] if 'symbol' in data.columns else 'unknown',
+                signal_type=SignalType.HOLD,
+                price=current_price,
+                timestamp=data.index[-1]
             )
 
+
+class SentimentStrategy(Strategy):
+    """
+    情绪指标策略
+    通过综合多个维度的情绪指标，识别市场情绪的极端情况，
+    在市场极度悲观时买入，极度乐观时卖出
+    """
+    
+    def __init__(self, name: str = "情绪指标策略", index_code: str = "000001.SH"):
+        """
+        初始化情绪指标策略
+        
+        Parameters:
+        name: 策略名称
+        index_code: 对应指数代码，默认为上证指数
+        """
+        super().__init__(name)
+        self.index_code = index_code
+        self.full_data = None  # 存储完整数据集
+        self.indicators_saved = False  # 标记是否已保存指标
+
+    def set_full_data(self, data: pd.DataFrame):
+        """
+        设置完整数据集
+        
+        Parameters:
+        data: 完整的历史价格数据
+        """
+        self.full_data = data.copy()
+
+    def _calculate_indicators(self, data: pd.DataFrame) -> pd.DataFrame:
+        """
+        计算情绪指标所需的所有指标
+        
+        Parameters:
+        data: 包含股票和指数数据的DataFrame
+        
+        Returns:
+        DataFrame: 添加了所有指标的DataFrame
+        """
+        df = data.copy()
+        
+        # 确保数值类型
+        cols_to_check = ['open', 'high', 'low', 'close', 'pre_close', 'change', 
+                        'pct_chg', 'vol', 'amount']
+        # 检查是否有指数数据列
+        has_index_data = 'high_index' in df.columns and 'low_index' in df.columns and 'close_index' in df.columns
+        if has_index_data:
+            cols_to_check.extend(['high_index', 'low_index', 'close_index'])
+            
+        for col in cols_to_check:
+            if col in df.columns:
+                df[col] = pd.to_numeric(df[col], errors='coerce')
+        
+        # === 核心指标计算 ===
+        # X_1: (CLOSE*2+HIGH+LOW)/4*10
+        df['X_1'] = (df['close'] * 2 + df['high'] + df['low']) / 4 * 10
+        
+        # X_2: EMA(X_1,13)-EMA(X_1,34)
+        df['X_2'] = df['X_1'].ewm(span=13, adjust=False).mean() - df['X_1'].ewm(span=34, adjust=False).mean()
+        
+        # X_3: EMA(X_2,5)
+        df['X_3'] = df['X_2'].ewm(span=5, adjust=False).mean()
+        
+        # X_4: 2*(X_2-X_3)*5.5
+        df['X_4'] = 2 * (df['X_2'] - df['X_3']) * 5.5
+        
+        # X_5/X_6: 正负分离
+        df['X_5'] = np.where(df['X_4'] <= 0, df['X_4'], 0)
+        df['X_6'] = np.where(df['X_4'] >= 0, df['X_4'], 0)
+        
+        # 如果没有指数数据，则使用默认值填充相关指标
+        if not has_index_data:
+            # 使用默认值填充指数相关指标
+            df['high_index'] = df['high']
+            df['low_index'] = df['low']
+            df['close_index'] = df['close']
+            # 只在调试模式下打印警告
+            # print("警告: 缺少指数数据，使用个股数据代替")
+        
+        # X_7: 指数相对位置
+        df['HHV_indexH_8'] = df['high_index'].rolling(8).max()
+        df['LLV_indexL_8'] = df['low_index'].rolling(8).min()
+        denominator = df['HHV_indexH_8'] - df['LLV_indexL_8']
+        df['X_7'] = np.where((denominator != 0) & (~np.isnan(denominator)), 
+                            (df['HHV_indexH_8'] - df['close_index']) / denominator * 8, 
+                            0)
+        
+        # X_8: 指数动量
+        df['SMA_X7_18'] = df['X_7'].rolling(18).mean()
+        df['X_8'] = (3 * df['X_7'] - 2 * df['SMA_X7_18']).ewm(span=5, adjust=False).mean()
+        
+        # X_9: 指数超买超卖
+        df['X_9'] = np.where((denominator != 0) & (~np.isnan(denominator)),
+                            (df['close_index'] - df['LLV_indexL_8']) / denominator * 10,
+                            0)
+        
+        # X_10-X_15: 指数趋势分析
+        df['X_10'] = (df['close_index'] * 2 + df['high_index'] + df['low_index']) / 4
+        df['X_11'] = df['X_10'].ewm(span=13, adjust=False).mean() - df['X_10'].ewm(span=34, adjust=False).mean()
+        df['X_12'] = df['X_11'].ewm(span=3, adjust=False).mean()
+        df['X_13'] = (df['X_11'] - df['X_12']) / 2
+        df['X_14'] = np.where(df['X_13'] >= 0, df['X_13'], 0)
+        df['X_15'] = np.where(df['X_13'] <= 0, df['X_13'], 0)
+        
+        # 情绪数值核心计算
+        df['LLV_LOW_55'] = df['low'].rolling(55).min()
+        df['HHV_HIGH_55'] = df['high'].rolling(55).max()
+        denominator_55 = df['HHV_HIGH_55'] - df['LLV_LOW_55']
+        df['RSV'] = np.where((denominator_55 != 0) & (~np.isnan(denominator_55)),
+                            (df['close'] - df['LLV_LOW_55']) / denominator_55 * 100,
+                            0)
+        
+        # 三重平滑处理
+        df['SMA1'] = df['RSV'].ewm(alpha=1/5, adjust=False).mean()
+        df['SMA2'] = df['SMA1'].ewm(alpha=1/3, adjust=False).mean()
+        df['X_16'] = 3 * df['SMA1'] - 2 * df['SMA2']
+        
+        # 情绪数值 (核心指标)
+        df['ZZZ'] = df['X_16'].ewm(span=3, adjust=False).mean()
+        df['X_17'] = df['ZZZ'].pct_change() * 100
+        
+        # === 信号生成 ===
+        # 低位反弹信号
+        df['wait_buy'] = (df['ZZZ'] <= 13)
+        df['ready_buy'] = (df['ZZZ'] <= 13) & (df['X_17'] > 13)
+        
+        # 高位风险信号
+        df['wait_sell'] = (df['ZZZ'] > 90) & (df['ZZZ'] > df['ZZZ'].shift(1))
+        df['ready_sell'] = (df['ZZZ'] > 90) & (df['ZZZ'] < df['ZZZ'].shift(1)) & (df['X_6'] < df['X_6'].shift(1))
+        
+        # 复合信号
+        df['now_buy'] = (df['X_14'] > 0) & (df['ZZZ'] < 13)
+        df['now_sell'] = (df['X_15'] < 0) & (df['ZZZ'] > 90)
+        
+        # 最终买卖信号
+        df['buy_signal'] = (df['now_buy']) & (df['wait_buy'])
+        df['sell_signal'] = (df['now_sell'])
+
+        return df
+
+    def generate_signal(self, data: pd.DataFrame) -> Signal:
+        """
+        根据情绪指标生成交易信号
+        
+        Parameters:
+        data: 包含股票和指数数据的DataFrame
+        
+        Returns:
+        Signal: 交易信号
+        """
         symbol = data.iloc[-1]['symbol'] if 'symbol' in data.columns else 'unknown'
         price = data['close'].iloc[-1]
         timestamp = data.index[-1]
-
-        # 计算布林带
-        rolling_mean = data['close'].rolling(window=self.period, min_periods=1).mean()
-        rolling_std = data['close'].rolling(window=self.period, min_periods=1).std()
         
-        # 处理标准差为空的情况
-        if pd.isna(rolling_std.iloc[-1]):
-            return Signal(
-                symbol=symbol,
-                signal_type=SignalType.HOLD,
-                price=price,
-                timestamp=timestamp,
-                reason="标准差计算异常"
-            )
-
-        middle_band = rolling_mean.iloc[-1]
-        upper_band = middle_band + (rolling_std.iloc[-1] * self.std_dev)
-        lower_band = middle_band - (rolling_std.iloc[-1] * self.std_dev)
+        # 检查是否拥有完整数据集且尚未保存指标
+        if (self.full_data is not None and 
+            len(self.full_data) > 360 and  # 接近完整数据长度
+            not self.indicators_saved):
+            try:
+                # 使用完整数据集计算指标
+                df_with_indicators = self._calculate_indicators(self.full_data)
+                
+                # 创建indicators目录（如果不存在）
+                import os
+                if not os.path.exists('indicators'):
+                    os.makedirs('indicators')
+                
+                # 生成文件名
+                symbol = df_with_indicators['symbol'].iloc[0] if 'symbol' in df_with_indicators.columns else 'unknown'
+                start_date = df_with_indicators.index[0].strftime('%Y%m%d') if len(df_with_indicators) > 0 else 'unknown'
+                end_date = df_with_indicators.index[-1].strftime('%Y%m%d') if len(df_with_indicators) > 0 else 'unknown'
+                filename = f"indicators/{symbol}_{start_date}_{end_date}_indicators.csv"
+                
+                # 保存指标数据
+                df_with_indicators.to_csv(filename, encoding='utf-8-sig')
+                print(f"指标数据已保存至: {filename}")
+                print(f"保存的指标数据行数: {len(df_with_indicators)}")
+                self.indicators_saved = True
+            except Exception as e:
+                print(f"保存指标数据时出错: {e}")
         
-        # 如果带宽太小，则不交易
-        if upper_band - lower_band < price * 0.001:
-            return Signal(
-                symbol=symbol,
-                signal_type=SignalType.HOLD,
-                price=price,
-                timestamp=timestamp,
-                reason="布林带宽度不足"
-            )
-
-        prev_price = data['close'].iloc[-2] if len(data) > 1 else price
-
-        if prev_price <= lower_band and price > lower_band:
-            # 价格从下方突破下轨，买入信号
+        # 为当前数据计算指标（用于生成信号）
+        df_with_indicators = self._calculate_indicators(data)
+        
+        # 获取最新的信号
+        latest_row = df_with_indicators.iloc[-1]
+        prev_row = df_with_indicators.iloc[-2] if len(df_with_indicators) > 1 else None
+        
+        # 判断买入信号
+        if latest_row['buy_signal']:
+            reason = f"满足情绪指标买入条件，当前情绪值:{latest_row['ZZZ']:.2f}"
             return Signal(
                 symbol=symbol,
                 signal_type=SignalType.BUY,
                 price=price,
                 timestamp=timestamp,
-                strength=min(1.0, (price - lower_band) / (middle_band - lower_band)) if middle_band != lower_band else 1.0,
-                reason=f"价格({price:.2f})突破布林带下轨({lower_band:.2f})"
+                reason=reason
             )
-        elif prev_price >= upper_band and price < upper_band:
-            # 价格从上方突破上轨，卖出信号
+        
+        # 判断卖出信号
+        if latest_row['sell_signal']:
+            reason = f"满足情绪指标卖出条件，当前情绪值:{latest_row['ZZZ']:.2f}"
             return Signal(
                 symbol=symbol,
                 signal_type=SignalType.SELL,
                 price=price,
                 timestamp=timestamp,
-                strength=min(1.0, (upper_band - price) / (upper_band - middle_band)) if upper_band != middle_band else 1.0,
-                reason=f"价格({price:.2f})突破布林带上轨({upper_band:.2f})"
+                reason=reason
             )
-        else:
-            return Signal(
-                symbol=symbol,
-                signal_type=SignalType.HOLD,
-                price=price,
-                timestamp=timestamp,
-                reason="无布林带突破信号"
-            )
+        
+        # 默认持有信号
+        return Signal(
+            symbol=symbol,
+            signal_type=SignalType.HOLD,
+            price=price,
+            timestamp=timestamp,
+            reason="未满足交易条件"
+        )

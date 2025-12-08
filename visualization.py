@@ -32,9 +32,16 @@ class Visualizer:
         """
         plt.figure(figsize=(12, 6))
         
+        has_data = False
         for name, result in results.items():
-            if result.equity_curve is not None and not result.equity_curve.empty:
+            if hasattr(result, 'equity_curve') and result.equity_curve is not None and not result.equity_curve.empty:
                 plt.plot(result.equity_curve.index, result.equity_curve.values, label=name, linewidth=2)
+                has_data = True
+        
+        if not has_data:
+            print("没有权益曲线数据可绘制")
+            plt.close()
+            return
         
         plt.title(title, fontsize=16, fontweight='bold')
         plt.xlabel('时间', fontsize=12)
@@ -54,9 +61,16 @@ class Visualizer:
         """
         plt.figure(figsize=(12, 6))
         
+        has_data = False
         for name, result in results.items():
-            if result.drawdown_curve is not None and not result.drawdown_curve.empty:
+            if hasattr(result, 'drawdown_curve') and result.drawdown_curve is not None and not result.drawdown_curve.empty:
                 plt.plot(result.drawdown_curve.index, result.drawdown_curve.values, label=name, linewidth=2)
+                has_data = True
+        
+        if not has_data:
+            print("没有回撤曲线数据可绘制")
+            plt.close()
+            return
         
         plt.title(title, fontsize=16, fontweight='bold')
         plt.xlabel('时间', fontsize=12)
@@ -75,7 +89,7 @@ class Visualizer:
         price_data: 价格数据
         title: 图表标题
         """
-        if result.trades is None or len(result.trades) == 0:
+        if not hasattr(result, 'trades') or result.trades is None or len(result.trades) == 0:
             print("没有交易记录可绘制")
             return
             
@@ -124,7 +138,7 @@ class Visualizer:
             print(f"夏普比率: {result.sharpe_ratio:.2f}")
             print(f"胜率: {result.win_rate:.2f}")
             print(f"盈利因子: {result.profit_factor:.2f}")
-            print(f"交易次数: {len(result.trades)}")
+            print(f"交易次数: {len(result.trades) if hasattr(result, 'trades') and result.trades else 0}")
 
     def print_trade_details_table(self, result: BacktestResult, strategy_name: str):
         """
@@ -134,35 +148,43 @@ class Visualizer:
         result: 回测结果
         strategy_name: 策略名称
         """
-        if not result.trades:
+        if not hasattr(result, 'trades') or not result.trades:
             print("没有交易记录")
             return
             
         print(f"\n策略 '{strategy_name}' 的详细交易记录:")
-        print("-" * 110)
-        print(f"{'时间':<20} {'类型':<8} {'股票代码':<12} {'价格':<12} {'数量':<12} {'手续费':<12} {'金额':<12}")
-        print("-" * 110)
+        print("-" * 150)
+        print(f"{'时间':<20} {'类型':<8} {'股票代码':<12} {'价格':<12} {'数量':<12} {'手续费':<12} {'金额':<12} {'持仓总量':<12} {'交易原因':<30}")
+        print("-" * 150)
         
         buy_count = 0
         sell_count = 0
         total_commission = 0
+        positions = {}  # 跟踪每个股票的持仓数量
         
         for trade in result.trades:
             trade_type = "买入" if trade.trade_type == SignalType.BUY else "卖出"
             if trade.trade_type == SignalType.BUY:
                 buy_count += 1
+                # 更新持仓
+                positions[trade.symbol] = positions.get(trade.symbol, 0) + trade.quantity
             else:
                 sell_count += 1
+                # 更新持仓
+                positions[trade.symbol] = positions.get(trade.symbol, 0) - trade.quantity
                 
             total_commission += trade.commission
             # 显示正确的交易金额
             amount = abs(trade.total_cost)  # 使用绝对值显示交易金额
             # 修复时间显示问题，统一时间格式
             timestamp_str = trade.timestamp.strftime('%Y-%m-%d %H:%M:%S') if hasattr(trade.timestamp, 'strftime') else str(trade.timestamp)
+            reason = getattr(trade, 'reason', '')[:28] if hasattr(trade, 'reason') else ''
+            # 获取当前持仓总量
+            position_total = positions.get(trade.symbol, 0)
             print(f"{timestamp_str:<20} {trade_type:<8} {trade.symbol:<12} "
-                  f"{trade.price:<12.2f} {abs(trade.quantity):<12.0f} {trade.commission:<12.2f} {amount:<12.2f}")
+                  f"{trade.price:<12.2f} {abs(trade.quantity):<12.0f} {trade.commission:<12.2f} {amount:<12.2f} {position_total:<12.0f} {reason:<30}")
         
-        print("-" * 110)
+        print("-" * 150)
         print(f"总买入次数: {buy_count}, 总卖出次数: {sell_count}, 总交易次数: {len(result.trades)}, 总手续费: {total_commission:.2f}")
 
     def plot_performance_comparison(self, results: Dict[str, BacktestResult]):
@@ -216,3 +238,28 @@ class Visualizer:
         
         plt.tight_layout()
         plt.show()
+
+    def plot_backtest_results(self, result: BacktestResult, price_data: pd.DataFrame, strategy_name: str = "策略"):
+        """
+        综合展示回测结果
+        
+        Parameters:
+        result: 回测结果
+        price_data: 价格数据
+        strategy_name: 策略名称
+        """
+        # 打印摘要
+        self.print_summary({strategy_name: result})
+        
+        # 打印详细交易记录
+        self.print_trade_details_table(result, strategy_name)
+        
+        # 绘制权益曲线
+        self.plot_equity_curve({strategy_name: result}, f"{strategy_name}权益曲线")
+        
+        # 绘制回撤曲线
+        if hasattr(result, 'drawdown_curve') and result.drawdown_curve is not None:
+            self.plot_drawdown_curve({strategy_name: result}, f"{strategy_name}回撤曲线")
+        
+        # 绘制买卖点
+        self.plot_trades(result, price_data, f"{strategy_name}买卖点标记")

@@ -9,16 +9,79 @@ import sys
 import os
 import matplotlib.pyplot as plt
 from data_manager import DataManager
+from data_source import DataSource
 from strategy import (
     MovingAverageCrossoverStrategy,
     RSIStategy,
-    BollingerBandsStrategy
+    BollingerBandsStrategy,
+    SentimentStrategy
 )
 from backtest_engine import BacktestEngine
 from visualization import Visualizer
 
 
-def run_single_backtest(strategy_name, symbol, start_date, end_date, data_source_type, **kwargs):
+# 创建全局数据管理器实例
+data_manager = DataManager()
+
+
+def get_data_source(source_type: str) -> DataSource:
+    """
+    工厂函数：根据类型创建数据源实例
+    
+    Parameters:
+    source_type: 数据源类型 ('tushare' 或 'longport')
+    
+    Returns:
+    DataSource: 数据源实例
+    """
+    if source_type.lower() == 'tushare':
+        from data_source import TushareDataSource
+        return TushareDataSource()
+    elif source_type.lower() == 'longport':
+        from data_source import LongportDataSource
+        return LongportDataSource()
+    else:
+        raise ValueError(f"不支持的数据源类型: {source_type}")
+
+
+def create_strategy(strategy_name: str, **kwargs) -> object:
+    """创建策略实例"""
+    strategies = {
+        'ma': MovingAverageCrossoverStrategy(short_window=kwargs.get('short_window', 5), 
+                                          long_window=kwargs.get('long_window', 20)),
+        'rsi': RSIStategy(period=kwargs.get('rsi_period', 14),
+                         oversold=kwargs.get('rsi_oversold', 30),
+                         overbought=kwargs.get('rsi_overbought', 70)),
+        'bollinger': BollingerBandsStrategy(period=kwargs.get('bb_period', 20),
+                                          std_dev=kwargs.get('bb_std_dev', 2)),
+        'sentiment': SentimentStrategy(index_code=kwargs.get('index_code'))
+    }
+    
+    return strategies.get(strategy_name)
+
+
+def run_single_backtest(
+    strategy_name: str,
+    symbol: str,
+    start_date: str,
+    end_date: str,
+    data_source_type: str = "tushare",
+    force_update: bool = False,
+    adj_mode: str = "none",
+    short_window: int = 5,
+    long_window: int = 20,
+    rsi_period: int = 14,
+    rsi_oversold: int = 30,
+    rsi_overbought: int = 70,
+    bb_period: int = 20,
+    bb_std_dev: float = 2,
+    index_code: str = None,
+    initial_capital: float = 100000.0,
+    commission_rate: float = 0.001,
+    warmup_period: int = 100,
+    fixed_quantity: int = None,
+    max_position: int = None
+):
     """
     运行单个策略回测
     
@@ -28,9 +91,24 @@ def run_single_backtest(strategy_name, symbol, start_date, end_date, data_source
     start_date: 开始日期
     end_date: 结束日期
     data_source_type: 数据源类型
-    kwargs: 策略参数
+    force_update: 是否强制更新数据
+    adj_mode: 复权模式
+    short_window: 短周期
+    long_window: 长周期
+    rsi_period: RSI周期
+    rsi_oversold: RSI超卖阈值
+    rsi_overbought: RSI超买阈值
+    bb_period: 布林带周期
+    bb_std_dev: 布林带标准差倍数
+    index_code: 指数代码
+    initial_capital: 初始资金
+    commission_rate: 手续费率
+    warmup_period: 预热期长度
+    fixed_quantity: 固定交易数量
+    max_position: 最大持仓数量
     """
-    print(f"量化策略回测平台 - 单策略回测")
+    print("=" * 50)
+    print("量化策略回测平台 - 单策略回测")
     print("=" * 50)
     print(f"策略: {strategy_name}")
     print(f"股票代码: {symbol}")
@@ -38,86 +116,43 @@ def run_single_backtest(strategy_name, symbol, start_date, end_date, data_source
     print(f"回测期间: {start_date} 至 {end_date}")
     print("=" * 50)
     
-    # 1. 初始化数据管理器
-    data_manager = DataManager()
-    
-    # 2. 获取数据（优先从本地加载）
-    data_source_config = {}
-    if data_source_type == 'tushare':
-        data_source_config['token'] = os.getenv('TUSHARE_TOKEN')
-    elif data_source_type == 'longport':
-        data_source_config['app_key'] = os.getenv('LONGPORT_APP_KEY')
-        data_source_config['app_secret'] = os.getenv('LONGPORT_APP_SECRET')
-        data_source_config['access_token'] = os.getenv('LONGPORT_ACCESS_TOKEN')
-    
+    # 获取数据
     price_data = data_manager.get_data(
-        symbol, start_date, end_date, data_source_type, 
-        force_update=kwargs.get('force_update', False),
-        **data_source_config
+        symbol, start_date, end_date, data_source_type, force_update=force_update, 
+        adj_mode=adj_mode, index_symbol=index_code
     )
     
-    if price_data.empty:
-        print(f"未获取到股票 {symbol} 在指定日期范围内的数据")
+    if price_data is None or price_data.empty:
+        print(f"未能获取到 {symbol} 的数据")
         return
     
-    # 3. 创建策略实例
-    strategies = {
-        "ma": MovingAverageCrossoverStrategy(
-            short_window=kwargs.get('short_window', 5), 
-            long_window=kwargs.get('long_window', 20)
-        ),
-        "rsi": RSIStategy(
-            period=kwargs.get('rsi_period', 14), 
-            oversold=kwargs.get('rsi_oversold', 30), 
-            overbought=kwargs.get('rsi_overbought', 70)
-        ),
-        "bollinger": BollingerBandsStrategy(
-            period=kwargs.get('bb_period', 20), 
-            std_dev=kwargs.get('bb_std_dev', 2)
-        )
-    }
+    # 创建策略实例
+    strategy = create_strategy(
+        strategy_name, short_window=short_window, long_window=long_window,
+        rsi_period=rsi_period, rsi_oversold=rsi_oversold, rsi_overbought=rsi_overbought,
+        bb_period=bb_period, bb_std_dev=bb_std_dev, index_code=index_code
+    )
     
-    if strategy_name not in strategies:
-        print(f"不支持的策略: {strategy_name}")
-        print(f"支持的策略: {list(strategies.keys())}")
+    if strategy is None:
+        print(f"未知的策略: {strategy_name}")
         return
     
-    strategy = strategies[strategy_name]
-    strategy_name_map = {"ma": "均线交叉策略", "rsi": "RSI策略", "bollinger": "布林带策略"}
-    display_name = strategy_name_map[strategy_name]
-    
-    # 4. 初始化回测引擎
+    # 创建回测引擎实例（传递固定数量交易和持仓限制参数）
     engine = BacktestEngine(
-        initial_capital=kwargs.get('initial_capital', 100000.0), 
-        commission_rate=kwargs.get('commission_rate', 0.001)
+        initial_capital=initial_capital, 
+        commission_rate=commission_rate, 
+        warmup_period=warmup_period,
+        fixed_quantity=fixed_quantity,
+        max_position=max_position
     )
     
-    # 5. 运行回测
-    print(f"正在运行{display_name}...")
+    # 运行回测
     result = engine.run_backtest(strategy, price_data, symbol, start_date, end_date)
-    print(f"{display_name}回测完成")
     
-    # 6. 可视化结果
+    # 打印结果并可视化
+    print(f"\n{strategy.name}回测完成")
     visualizer = Visualizer()
-    
-    # 打印摘要报告
-    results = {display_name: result}
-    visualizer.print_summary(results)
-    
-    # 打印详细交易记录
-    print("\n" + "=" * 80)
-    print("详细交易记录".center(80))
-    print("=" * 80)
-    visualizer.print_trade_details_table(result, display_name)
-    
-    # 绘制权益曲线
-    visualizer.plot_equity_curve(results, f"{display_name}权益曲线")
-    
-    # 绘制回撤曲线
-    visualizer.plot_drawdown_curve(results, f"{display_name}回撤曲线")
-    
-    # 绘制买卖点
-    visualizer.plot_trades(result, price_data, f"{display_name}买卖点标记")
+    visualizer.plot_backtest_results(result, price_data, strategy.name)
 
 
 def download_data(symbol, start_date, end_date, data_source_type, **kwargs):
@@ -131,9 +166,15 @@ def download_data(symbol, start_date, end_date, data_source_type, **kwargs):
     data_source_type: 数据源类型
     kwargs: 其他参数
     """
+    index_code = kwargs.get('index_code', None)
+    adj_mode = kwargs.get('adj_mode', 'none')
+    
     print(f"数据下载功能")
     print("=" * 50)
     print(f"股票代码: {symbol}")
+    if index_code:
+        print(f"指数代码: {index_code}")
+    print(f"复权模式: {adj_mode}")
     print(f"数据源: {data_source_type}")
     print(f"下载期间: {start_date} 至 {end_date}")
     print("=" * 50)
@@ -155,6 +196,8 @@ def download_data(symbol, start_date, end_date, data_source_type, **kwargs):
     try:
         price_data = data_manager.fetch_and_save_data(
             symbol, start_date, end_date, data_source_type,
+            index_symbol=index_code,
+            adj_mode=adj_mode,
             **data_source_config
         )
         
@@ -167,7 +210,7 @@ def download_data(symbol, start_date, end_date, data_source_type, **kwargs):
         print(f"数据时间范围: {price_data.index.min()} 至 {price_data.index.max()}")
         
         # 显示数据文件信息
-        data_file = data_manager._get_data_filename(symbol, start_date, end_date, data_source_type)
+        data_file = data_manager._get_data_filename(symbol, start_date, end_date, data_source_type, index_code, adj_mode)
         if os.path.exists(data_file):
             file_size = os.path.getsize(data_file) / 1024  # KB
             print(f"数据已保存至: {data_file}")
@@ -190,9 +233,15 @@ def view_data(symbol, start_date, end_date, data_source_type, **kwargs):
     data_source_type: 数据源类型
     kwargs: 其他参数
     """
+    index_code = kwargs.get('index_code', None)
+    adj_mode = kwargs.get('adj_mode', 'none')
+    
     print(f"数据查看功能")
     print("=" * 50)
     print(f"股票代码: {symbol}")
+    if index_code:
+        print(f"指数代码: {index_code}")
+    print(f"复权模式: {adj_mode}")
     print(f"数据源: {data_source_type}")
     print(f"查看期间: {start_date} 至 {end_date}")
     print("=" * 50)
@@ -213,6 +262,8 @@ def view_data(symbol, start_date, end_date, data_source_type, **kwargs):
     price_data = data_manager.get_data(
         symbol, start_date, end_date, data_source_type,
         force_update=kwargs.get('force_update', False),
+        index_symbol=index_code,
+        adj_mode=adj_mode,
         **data_source_config
     )
     
@@ -239,48 +290,28 @@ def view_data(symbol, start_date, end_date, data_source_type, **kwargs):
     if 'volume' in price_data.columns:
         print(f"成交量范围: {price_data['volume'].min():.0f} - {price_data['volume'].max():.0f}")
     
-    # 6. 显示前几行和后几行数据
+    # 检查是否有指数数据
+    has_index_data = any(col.endswith('_index') for col in price_data.columns)
+    if has_index_data:
+        print(f"\n指数数据信息:")
+        index_cols = [col for col in price_data.columns if col.endswith('_index')]
+        for col in index_cols:
+            base_col = col.replace('_index', '')
+            print(f"{base_col.upper()}范围: {price_data[col].min():.2f} - {price_data[col].max():.2f}")
+    
+    # 6. 显示前几行数据
     print(f"\n前5行数据:")
-    print(price_data.head().to_string())
+    print(price_data.head())
     
-    print(f"\n后5行数据:")
-    print(price_data.tail().to_string())
-    
-    # 7. 检查缺失值
-    print(f"\n缺失值检查:")
-    missing_values = price_data.isnull().sum()
-    if missing_values.sum() > 0:
-        for col, count in missing_values.items():
-            if count > 0:
-                print(f"  {col}: {count} 个缺失值")
-    else:
-        print("  无缺失值")
-    
-    # 8. 数据质量检查
-    print(f"\n数据质量检查:")
-    if 'close' in price_data.columns:
-        negative_prices = (price_data['close'] <= 0).sum()
-        if negative_prices > 0:
-            print(f"  警告: 发现 {negative_prices} 个非正收盘价")
-        else:
-            print(f"  收盘价数据正常")
-    
-    if 'volume' in price_data.columns:
-        negative_volumes = (price_data['volume'] < 0).sum()
-        if negative_volumes > 0:
-            print(f"  警告: 发现 {negative_volumes} 个负成交量")
-        else:
-            print(f"  成交量数据正常")
-    
-    # 9. 显示数据文件信息
-    data_file = data_manager._get_data_filename(symbol, start_date, end_date, data_source_type)
+    # 显示数据文件信息
+    data_file = data_manager._get_data_filename(symbol, start_date, end_date, data_source_type, index_code, adj_mode)
     if os.path.exists(data_file):
         file_size = os.path.getsize(data_file) / 1024  # KB
         print(f"\n数据文件信息:")
-        print(f"  文件路径: {data_file}")
-        print(f"  文件大小: {file_size:.2f} KB")
+        print(f"文件路径: {data_file}")
+        print(f"文件大小: {file_size:.2f} KB")
     
-    # 10. 绘制价格和成交量图表
+    # 7. 绘制价格和成交量图表
     plot_data_charts(price_data, symbol)
 
 
@@ -333,8 +364,8 @@ def main():
     parser = argparse.ArgumentParser(description='量化策略回测平台')
     parser.add_argument('--mode', choices=['demo', 'single', 'view', 'download'], default='demo', 
                        help='运行模式: demo(演示多策略), single(单策略), view(查看数据), download(下载数据)')
-    parser.add_argument('--strategy', choices=['ma', 'rsi', 'bollinger'],
-                       help='策略名称: ma(均线交叉), rsi(RSI策略), bollinger(布林带)')
+    parser.add_argument('--strategy', choices=['ma', 'rsi', 'bollinger', 'sentiment'],
+                       help='策略名称: ma(均线交叉), rsi(RSI策略), bollinger(布林带), sentiment(情绪指标)')
     parser.add_argument('--symbol', help='股票代码')
     parser.add_argument('--start-date', help='开始日期 (YYYY-MM-DD)')
     parser.add_argument('--end-date', help='结束日期 (YYYY-MM-DD)')
@@ -342,6 +373,8 @@ def main():
                        help='数据源类型: tushare 或 longport')
     parser.add_argument('--force-update', action='store_true', 
                        help='强制更新数据（忽略缓存）')
+    parser.add_argument('--adj-mode', choices=['none', 'qfq'], default='none',
+                       help='复权模式: none(不复权), qfq(前复权)')
     
     # 策略参数
     parser.add_argument('--short-window', type=int, default=5, help='均线交叉策略短周期')
@@ -351,10 +384,16 @@ def main():
     parser.add_argument('--rsi-overbought', type=int, default=70, help='RSI超买阈值')
     parser.add_argument('--bb-period', type=int, default=20, help='布林带计算周期')
     parser.add_argument('--bb-std-dev', type=float, default=2, help='布林带标准差倍数')
+    parser.add_argument('--index-code', type=str, default=None, help='指数代码，用于需要指数数据的策略')
     
     # 回测参数
     parser.add_argument('--initial-capital', type=float, default=100000.0, help='初始资金')
     parser.add_argument('--commission-rate', type=float, default=0.001, help='手续费率')
+    parser.add_argument('--warmup-period', type=int, default=100, help='预热期长度（交易日数量）')
+    parser.add_argument('--fixed-quantity', type=int, default=None, 
+                       help='固定交易数量（如果不指定，则使用动态仓位）')
+    parser.add_argument('--max-position', type=int, default=None, 
+                       help='最大持仓数量（如果不指定，则无限制）')
     
     args = parser.parse_args()
     
@@ -371,6 +410,7 @@ def main():
             end_date=args.end_date,
             data_source_type=args.data_source,
             force_update=args.force_update,
+            adj_mode=args.adj_mode,
             short_window=args.short_window,
             long_window=args.long_window,
             rsi_period=args.rsi_period,
@@ -378,8 +418,12 @@ def main():
             rsi_overbought=args.rsi_overbought,
             bb_period=args.bb_period,
             bb_std_dev=args.bb_std_dev,
+            index_code=args.index_code,
             initial_capital=args.initial_capital,
-            commission_rate=args.commission_rate
+            commission_rate=args.commission_rate,
+            warmup_period=args.warmup_period,
+            fixed_quantity=args.fixed_quantity,
+            max_position=args.max_position
         )
     elif args.mode == 'view':
         if not all([args.symbol, args.start_date, args.end_date]):
@@ -392,7 +436,9 @@ def main():
             start_date=args.start_date,
             end_date=args.end_date,
             data_source_type=args.data_source,
-            force_update=args.force_update
+            force_update=args.force_update,
+            adj_mode=args.adj_mode,
+            index_code=args.index_code
         )
     elif args.mode == 'download':
         if not all([args.symbol, args.start_date, args.end_date]):
@@ -404,7 +450,9 @@ def main():
             symbol=args.symbol,
             start_date=args.start_date,
             end_date=args.end_date,
-            data_source_type=args.data_source
+            data_source_type=args.data_source,
+            adj_mode=args.adj_mode,
+            index_code=args.index_code
         )
         
         if not success:

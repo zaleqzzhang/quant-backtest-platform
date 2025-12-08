@@ -25,6 +25,7 @@ class Trade:
     timestamp: pd.Timestamp
     commission: float = 0.0
     total_cost: float = 0.0
+    reason: str = ""  # 交易原因
 
 
 @dataclass
@@ -69,34 +70,57 @@ class BacktestResult:
         
         print("-" * 100)
         print(f"总交易次数: {len(self.trades)}")
+    
+    def print_summary(self):
+        """
+        打印回测结果摘要
+        """
+        print("=" * 80)
+        print("回测结果摘要".center(80))
+        print("=" * 80)
+        print(f"总收益率: {self.total_return:.2f}%")
+        print(f"年化收益率: {self.annual_return:.2f}%")
+        print(f"最大回撤: {self.max_drawdown:.2f}%")
+        print(f"夏普比率: {self.sharpe_ratio:.2f}")
+        print(f"胜率: {self.win_rate:.2f}")
+        print(f"盈利因子: {self.profit_factor:.2f}")
+        print(f"交易次数: {len(self.trades) if self.trades else 0}")
 
 
 class BacktestEngine:
     """
     回测引擎
+    执行策略回测的核心逻辑
     """
-
-    def __init__(self, initial_capital: float = 100000.0, commission_rate: float = 0.001):
+    
+    def __init__(self, initial_capital: float = 100000.0, commission_rate: float = 0.001, 
+                 warmup_period: int = 100, fixed_quantity: int = None, max_position: int = None):
         """
         初始化回测引擎
         
         Parameters:
         initial_capital: 初始资金
-        commission_rate: 手细费率
+        commission_rate: 手续费率
+        warmup_period: 预热期长度（交易日数量）
+        fixed_quantity: 固定交易数量（如果为None，则使用动态仓位）
+        max_position: 最大持仓数量（如果为None，则无限制）
         """
         self.initial_capital = initial_capital
         self.commission_rate = commission_rate
+        self.warmup_period = warmup_period
+        self.fixed_quantity = fixed_quantity
+        self.max_position = max_position
         self.portfolio = Portfolio(cash=initial_capital)
-        self.results = {}
-
-    def run_backtest(self, strategy: Strategy, data: pd.DataFrame, 
-                     symbol: str, start_date: str, end_date: str) -> BacktestResult:
+        self.results = {}  # 存储回测结果
+    
+    def run_backtest(self, strategy: Strategy, data: pd.DataFrame, symbol: str, 
+                     start_date: str, end_date: str) -> BacktestResult:
         """
         运行回测
         
         Parameters:
         strategy: 策略实例
-        data: 历史数据
+        data: 历史价格数据
         symbol: 股票代码
         start_date: 回测开始日期
         end_date: 回测结束日期
@@ -110,6 +134,18 @@ class BacktestEngine:
             print(f"在指定日期范围内没有找到数据: {start_date} 至 {end_date}")
             return BacktestResult()
         
+        # 确定预热期后的日期
+        if len(data) <= self.warmup_period:
+            print(f"数据不足{self.warmup_period}个交易日，无法进行回测")
+            return BacktestResult()
+        
+        warmup_end_date = data.index[self.warmup_period - 1]  # 预热期结束的日期
+        print(f"策略将在 {warmup_end_date.strftime('%Y-%m-%d')} 之后开始交易 (预热期: {self.warmup_period} 个交易日)")
+        
+        # 向策略传递完整数据集（如果策略支持）
+        if hasattr(strategy, 'set_full_data'):
+            strategy.set_full_data(data)
+        
         # 初始化变量
         trades = []
         equity_curve = []
@@ -120,14 +156,16 @@ class BacktestEngine:
             # 当前日期的数据
             current_data = data.iloc[:i+1].copy()  # 使用.copy()避免SettingWithCopyWarning
             
-            # 生成交易信号
-            signal = strategy.generate_signal(current_data)
-            
-            # 执行交易
-            trade = self._execute_trade(signal, data.iloc[i])
-            if trade:
-                trades.append(trade)
+            # 只有在超过预热期之后才生成交易信号
+            if i >= self.warmup_period:  # 从预热期后第一个交易日开始交易
+                # 生成交易信号
+                signal = strategy.generate_signal(current_data)
                 
+                # 执行交易
+                trade = self._execute_trade(signal, data.iloc[i])
+                if trade:
+                    trades.append(trade)
+            
             # 计算当前资产总值
             portfolio_value = self._calculate_portfolio_value(data.iloc[i])
             equity_curve.append(portfolio_value)
@@ -181,18 +219,28 @@ class BacktestEngine:
         # 计算可交易数量（基于可用现金的一定比例）
         position_size = 0
         if signal.signal_type == SignalType.BUY:
-            # 动态调整仓位大小，最多使用可用现金的一部分
-            available_cash = self.portfolio.cash * 0.9  # 使用更多可用资金
-            position_size = int(available_cash / price / 100) * 100  # 以100股为单位
+            # 检查是否超过最大持仓限制
+            current_position = self.portfolio.positions.get(symbol, 0)
+            if self.max_position is not None and current_position >= self.max_position:
+                return None  # 超过最大持仓限制，不买入
+            
+            if self.fixed_quantity is not None:
+                # 使用固定交易数量
+                position_size = self.fixed_quantity
+            else:
+                # 动态调整仓位大小，最多使用可用现金的一部分
+                available_cash = self.portfolio.cash * 0.1  # 使用更多可用资金
+                position_size = int(available_cash / price / 100) * 100  # 以100股为单位
             
             if position_size > 0:
                 cost = position_size * price
                 commission = cost * self.commission_rate
                 total_cost = cost + commission
                 
+                # 检查是否有足够现金
                 if total_cost <= self.portfolio.cash:
                     self.portfolio.cash -= total_cost
-                    self.portfolio.positions[symbol] = self.portfolio.positions.get(symbol, 0) + position_size
+                    self.portfolio.positions[symbol] = current_position + position_size
                     
                     trade = Trade(
                         symbol=symbol,
@@ -201,16 +249,22 @@ class BacktestEngine:
                         quantity=position_size,
                         timestamp=timestamp,
                         commission=commission,
-                        total_cost=-total_cost  # 改为负值表示现金流出
+                        total_cost=-total_cost,  # 改为负值表示现金流出
+                        reason=signal.reason     # 添加交易原因
                     )
                     return trade
                     
         elif signal.signal_type == SignalType.SELL:
-            # 卖出持仓
+            # 检查是否有持仓可以卖出
             if symbol in self.portfolio.positions and self.portfolio.positions[symbol] > 0:
-                # 可以只卖出部分仓位
-                available_shares = self.portfolio.positions[symbol]
-                position_size = int(available_shares / 2) if available_shares > 100 else available_shares  # 卖出一半或全部
+                if self.fixed_quantity is not None:
+                    # 使用固定交易数量
+                    position_size = min(self.fixed_quantity, self.portfolio.positions[symbol])
+                else:
+                    # 可以只卖出部分仓位
+                    available_shares = self.portfolio.positions[symbol]
+                    position_size = int(available_shares / 2) if available_shares > 100 else available_shares  # 卖出一半或全部
+                
                 if position_size <= 0:
                     return None
                     
@@ -228,7 +282,8 @@ class BacktestEngine:
                     quantity=position_size,  # 正的数量表示卖出数量
                     timestamp=timestamp,
                     commission=commission,
-                    total_cost=net_proceeds  # 正值表示现金流入
+                    total_cost=net_proceeds,  # 正值表示现金流入
+                    reason=signal.reason      # 添加交易原因
                 )
                 return trade
                 
@@ -249,6 +304,7 @@ class BacktestEngine:
         timestamp = current_bar.name
         
         if symbol in self.portfolio.positions and self.portfolio.positions[symbol] > 0:
+            # 强制平仓所有剩余股份
             position_size = self.portfolio.positions[symbol]
             proceeds = position_size * price
             commission = proceeds * self.commission_rate
@@ -264,7 +320,8 @@ class BacktestEngine:
                 quantity=position_size,
                 timestamp=timestamp,
                 commission=commission,
-                total_cost=net_proceeds
+                total_cost=net_proceeds,
+                reason="强制平仓"  # 添加交易原因
             )
             return trade
             

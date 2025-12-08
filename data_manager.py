@@ -6,6 +6,9 @@
 import pandas as pd
 import os
 import pickle
+
+
+import inspect
 from datetime import datetime
 from typing import Optional
 from data_source import get_data_source
@@ -29,7 +32,7 @@ class DataManager:
         if not os.path.exists(self.data_dir):
             os.makedirs(self.data_dir)
     
-    def _get_data_filename(self, symbol: str, start_date: str, end_date: str, data_source: str) -> str:
+    def _get_data_filename(self, symbol: str, start_date: str, end_date: str, data_source: str, index_symbol: str = None, adj_mode: str = 'none') -> str:
         """
         生成数据文件名
         
@@ -38,15 +41,25 @@ class DataManager:
         start_date: 开始日期
         end_date: 结束日期
         data_source: 数据源类型
+        index_symbol: 指数代码
+        adj_mode: 复权模式
         
         Returns:
         str: 数据文件路径
         """
-        filename = f"{symbol}_{start_date}_{end_date}_{data_source}.pkl"
+        if index_symbol and adj_mode != 'none':
+            filename = f"{symbol}_{start_date}_{end_date}_{data_source}_with_{index_symbol}_{adj_mode}.pkl"
+        elif index_symbol:
+            filename = f"{symbol}_{start_date}_{end_date}_{data_source}_with_{index_symbol}.pkl"
+        elif adj_mode != 'none':
+            filename = f"{symbol}_{start_date}_{end_date}_{data_source}_{adj_mode}.pkl"
+        else:
+            filename = f"{symbol}_{start_date}_{end_date}_{data_source}.pkl"
+            
         return os.path.join(self.data_dir, filename)
     
     def fetch_and_save_data(self, symbol: str, start_date: str, end_date: str, 
-                           data_source_type: str = 'tushare', **kwargs) -> pd.DataFrame:
+                           data_source_type: str = 'tushare', index_symbol: str = None, adj_mode: str = 'none', **kwargs) -> pd.DataFrame:
         """
         获取并保存数据
         
@@ -55,6 +68,8 @@ class DataManager:
         start_date: 开始日期
         end_date: 结束日期
         data_source_type: 数据源类型
+        index_symbol: 指数代码，如果提供则同时获取指数数据
+        adj_mode: 复权模式 ('none', 'qfq')
         **kwargs: 数据源配置参数
         
         Returns:
@@ -72,14 +87,31 @@ class DataManager:
         data_source = get_data_source(data_source_type, **data_source_config)
         
         # 获取数据
-        data = data_source.get_history_data(symbol, start_date, end_date)
+        sig = inspect.signature(data_source.get_history_data)
+        if hasattr(data_source, 'get_history_data'):
+            # 检查数据源是否支持额外参数
+            params = list(sig.parameters.keys())
+            extra_params = {}
+            if 'index_symbol' in params:
+                extra_params['index_symbol'] = index_symbol
+            if 'adj_mode' in params:
+                extra_params['adj_mode'] = adj_mode
+                
+            if extra_params:
+                data = data_source.get_history_data(symbol, start_date, end_date, **extra_params)
+            else:
+                data = data_source.get_history_data(symbol, start_date, end_date)
+        else:
+            # 否则使用旧的方式
+            data = data_source.get_history_data(symbol, start_date, end_date)
+            
         data['symbol'] = symbol
         
         # 数据清洗
         cleaned_data = self._clean_data(data)
         
         # 保存数据
-        data_file = self._get_data_filename(symbol, start_date, end_date, data_source_type)
+        data_file = self._get_data_filename(symbol, start_date, end_date, data_source_type, index_symbol, adj_mode)
         self._save_data(cleaned_data, data_file)
         
         return cleaned_data
@@ -99,6 +131,11 @@ class DataManager:
         
         # 确保列的顺序一致
         expected_columns = ['open', 'high', 'low', 'close', 'volume', 'symbol']
+        # 检查是否有指数数据列
+        index_columns = [col for col in data.columns if col.endswith('_index') or col == 'index_volume']
+        if index_columns:
+            expected_columns.extend(index_columns)
+            
         available_columns = [col for col in expected_columns if col in data.columns]
         data = data[available_columns]
         
@@ -121,7 +158,7 @@ class DataManager:
             pickle.dump(data, f)
     
     def load_data(self, symbol: str, start_date: str, end_date: str, 
-                 data_source_type: str = 'tushare') -> Optional[pd.DataFrame]:
+                 data_source_type: str = 'tushare', index_symbol: str = None, adj_mode: str = 'none') -> Optional[pd.DataFrame]:
         """
         从文件加载数据
         
@@ -130,11 +167,13 @@ class DataManager:
         start_date: 开始日期
         end_date: 结束日期
         data_source_type: 数据源类型
+        index_symbol: 指数代码
+        adj_mode: 复权模式
         
         Returns:
         DataFrame or None: 加载的数据，如果文件不存在则返回None
         """
-        data_file = self._get_data_filename(symbol, start_date, end_date, data_source_type)
+        data_file = self._get_data_filename(symbol, start_date, end_date, data_source_type, index_symbol, adj_mode)
         
         if os.path.exists(data_file):
             try:
@@ -148,7 +187,7 @@ class DataManager:
             return None
     
     def data_exists(self, symbol: str, start_date: str, end_date: str, 
-                   data_source_type: str = 'tushare') -> bool:
+                   data_source_type: str = 'tushare', index_symbol: str = None, adj_mode: str = 'none') -> bool:
         """
         检查数据文件是否存在
         
@@ -157,15 +196,18 @@ class DataManager:
         start_date: 开始日期
         end_date: 结束日期
         data_source_type: 数据源类型
+        index_symbol: 指数代码
+        adj_mode: 复权模式
         
         Returns:
         bool: 数据文件是否存在
         """
-        data_file = self._get_data_filename(symbol, start_date, end_date, data_source_type)
+        data_file = self._get_data_filename(symbol, start_date, end_date, data_source_type, index_symbol, adj_mode)
         return os.path.exists(data_file)
     
     def get_data(self, symbol: str, start_date: str, end_date: str, 
-                data_source_type: str = 'tushare', force_update: bool = False, **kwargs) -> pd.DataFrame:
+                data_source_type: str = 'tushare', force_update: bool = False, 
+                index_symbol: str = None, adj_mode: str = 'none', **kwargs) -> pd.DataFrame:
         """
         获取数据（优先从本地加载，如果不存在或强制更新则重新获取）
         
@@ -175,18 +217,20 @@ class DataManager:
         end_date: 结束日期
         data_source_type: 数据源类型
         force_update: 是否强制更新数据
+        index_symbol: 指数代码，如果提供则同时获取指数数据
+        adj_mode: 复权模式 ('none', 'qfq')
         **kwargs: 数据源配置参数
         
         Returns:
         DataFrame: 数据
         """
         # 如果不强制更新且数据文件存在，则从文件加载
-        if not force_update and self.data_exists(symbol, start_date, end_date, data_source_type):
-            data = self.load_data(symbol, start_date, end_date, data_source_type)
+        if not force_update and self.data_exists(symbol, start_date, end_date, data_source_type, index_symbol, adj_mode):
+            data = self.load_data(symbol, start_date, end_date, data_source_type, index_symbol, adj_mode)
             if data is not None:
                 print(f"从本地文件加载数据: {symbol} ({start_date} 至 {end_date})")
                 return data
         
-        # 否则重新获取并保存数据
+        # 否则重新获取数据
         print(f"获取新数据: {symbol} ({start_date} 至 {end_date})")
-        return self.fetch_and_save_data(symbol, start_date, end_date, data_source_type, **kwargs)
+        return self.fetch_and_save_data(symbol, start_date, end_date, data_source_type, index_symbol, adj_mode, **kwargs)
