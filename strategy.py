@@ -447,12 +447,6 @@ class SentimentStrategy(Strategy):
             # print("警告: 缺少指数数据，使用个股数据代替")
         
         # X_7: 指数相对位置
-        #df['HHV_indexH_8'] = df['high_index'].rolling(8).max()
-        #df['LLV_indexL_8'] = df['low_index'].rolling(8).min()
-        #denominator = df['HHV_indexH_8'] - df['LLV_indexL_8']
-        #df['X_7'] = np.where((denominator != 0) & (~np.isnan(denominator)), 
-        #                    (df['HHV_indexH_8'] - df['close_index']) / denominator * 8, 
-        #                   0)
         df['HHV_indexH_8'] = df['high_index'].rolling(8, min_periods=1).max()
         df['LLV_indexL_8'] = df['low_index'].rolling(8, min_periods=1).min()
         denominator = df['HHV_indexH_8'] - df['LLV_indexL_8']
@@ -460,9 +454,6 @@ class SentimentStrategy(Strategy):
         df['X_7'] = df['X_7'].replace([np.inf, -np.inf], np.nan).ffill().fillna(0)
         
         # X_8: 指数动量
-        #df['SMA_X7_18'] = df['X_7'].rolling(18).mean()
-        #df['X_7'].rolling(18).mean()
-        #df['X_8'] = (3 * df['X_7'] - 2 * df['SMA_X7_18']).ewm(span=5, adjust=False).mean()
         df['SMA_X7_18'] = self._sma(df['X_7'], n=18, m=1)
         df['J_like'] = 3 * df['X_7'] - 2 * df['SMA_X7_18']
         df['X_8'] = df['J_like'].ewm(span=5, adjust=False).mean()
@@ -482,12 +473,6 @@ class SentimentStrategy(Strategy):
         df['X_15'] = np.where(df['X_13'] <= 0, df['X_13'], 0)
         
         # 情绪数值核心计算
-        #df['LLV_LOW_55'] = df['low'].rolling(55).min()
-        #df['HHV_HIGH_55'] = df['high'].rolling(55).max()
-        #denominator_55 = df['HHV_HIGH_55'] - df['LLV_LOW_55']
-        #df['RSV'] = np.where((denominator_55 != 0) & (~np.isnan(denominator_55)),
-        #                    (df['close'] - df['LLV_LOW_55']) / denominator_55 * 100,
-        #                    0)
         df['LLV_LOW_55'] = df['low'].rolling(55, min_periods=1).min()
         df['HHV_HIGH_55'] = df['high'].rolling(55, min_periods=1).max()
         denominator_55 = df['HHV_HIGH_55'] - df['LLV_LOW_55']
@@ -497,9 +482,6 @@ class SentimentStrategy(Strategy):
         df['RSV'] = df['RSV'].clip(lower=0, upper=100)  # 理论范围 [0,100]
         
         # 三重平滑处理
-        #df['SMA1'] = df['RSV'].ewm(alpha=1/5, adjust=False).mean()
-        #df['SMA2'] = df['SMA1'].ewm(alpha=1/3, adjust=False).mean()
-        #df['X_16'] = 3 * df['SMA1'] - 2 * df['SMA2']
         df['SMA1'] = self._sma(df['RSV'], n=5, m=1)      # = SMA(RSV,5,1)
         df['SMA2'] = self._sma(df['SMA1'], n=3, m=1)     # = SMA(SMA1,3,1)
         df['X_16'] = 3 * df['SMA1'] - 2 * df['SMA2']
@@ -549,29 +531,6 @@ class SentimentStrategy(Strategy):
         df['sell_signal'] = (df['风险信号']) 
 
         return df
-
-
-        # 低位反弹信号
-        #df['wait_buy'] = (df['ZZZ'] <= 13)
-        #df['ready_buy'] = (df['ZZZ'] <= 13) & (df['X_17'] > 13)
-        
-        # 高位风险信号
-        #df['wait_sell'] = (df['ZZZ'] > 90) & (df['ZZZ'] > df['ZZZ'].shift(1))
-        #df['ready_sell'] = (df['ZZZ'] > 90) & (df['ZZZ'] < df['ZZZ'].shift(1)) & (df['X_6'] < df['X_6'].shift(1))
-        
-        # 复合信号
-        #df['now_buy'] = (df['X_14'] > 0) & (df['ZZZ'] < 13)
-        #df['now_sell'] = (df['X_15'] < 0) & (df['ZZZ'] > 90)
-        
-        # 最终买卖信号
-        #df['buy_signal'] = (df['now_buy'])
-        #df['sell_signal'] = (df['now_sell'])
-        # 添加辅助列：上次买入信号位置
-        #df['buy_candidate'] = (df['ZZZ'] <= 13) & (df['X_17'] > 13) & (df['X_14'] > 0)
-        # 使用 shift 模拟 FILTER(..., 10)
-        #df['buy_signal'] = df['buy_candidate'] & (df['buy_candidate'].rolling(window=10, min_periods=1).sum().gt(1).shift(1))
-
-        #return df
 
     def generate_signal(self, data: pd.DataFrame) -> Signal:
         """
