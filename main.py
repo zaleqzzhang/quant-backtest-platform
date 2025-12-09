@@ -14,7 +14,8 @@ from strategy import (
     MovingAverageCrossoverStrategy,
     RSIStategy,
     BollingerBandsStrategy,
-    SentimentStrategy
+    SentimentStrategy,
+    MomentumStrategy
 )
 from backtest_engine import BacktestEngine
 from visualization import Visualizer
@@ -54,7 +55,9 @@ def create_strategy(strategy_name: str, **kwargs) -> object:
                          overbought=kwargs.get('rsi_overbought', 70)),
         'bollinger': BollingerBandsStrategy(period=kwargs.get('bb_period', 20),
                                           std_dev=kwargs.get('bb_std_dev', 2)),
-        'sentiment': SentimentStrategy(index_code=kwargs.get('index_code'))
+        'sentiment': SentimentStrategy(index_code=kwargs.get('index_code')),
+        'momentum': MomentumStrategy(period=kwargs.get('momentum_period', 90),
+                                   atr_period=kwargs.get('momentum_atr_period', 20))
     }
     
     return strategies.get(strategy_name)
@@ -123,6 +126,9 @@ def run_single_backtest(strategy_name, symbol, start_date, end_date, data_source
         strategy = BollingerBandsStrategy(period=bb_period, std_dev=bb_std_dev)
     elif strategy_name == "sentiment":
         strategy = SentimentStrategy(index_code=index_code)
+    elif strategy_name == "momentum":
+        strategy = MomentumStrategy(period=kwargs.get('momentum_period', 90),
+                                  atr_period=kwargs.get('momentum_atr_period', 20))
     
     if strategy is None:
         print(f"未知的策略: {strategy_name}")
@@ -363,8 +369,8 @@ def main():
     parser = argparse.ArgumentParser(description='量化策略回测平台')
     parser.add_argument('--mode', choices=['demo', 'single', 'view', 'download'], default='demo', 
                        help='运行模式: demo(演示多策略), single(单策略), view(查看数据), download(下载数据)')
-    parser.add_argument('--strategy', choices=['ma', 'rsi', 'bollinger', 'sentiment'],
-                       help='策略名称: ma(均线交叉), rsi(RSI策略), bollinger(布林带), sentiment(情绪指标)')
+    parser.add_argument('--strategy', choices=['ma', 'rsi', 'bollinger', 'sentiment', 'momentum'],
+                       help='策略名称: ma(均线交叉), rsi(RSI策略), bollinger(布林带), sentiment(情绪指标), momentum(动量策略)')
     parser.add_argument('--symbol', help='股票代码')
     parser.add_argument('--start-date', help='开始日期 (YYYY-MM-DD)')
     parser.add_argument('--end-date', help='结束日期 (YYYY-MM-DD)')

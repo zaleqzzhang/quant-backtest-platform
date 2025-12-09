@@ -9,6 +9,7 @@ from abc import ABC, abstractmethod
 from typing import Dict, List, Tuple, Any
 from dataclasses import dataclass
 from enum import Enum
+from scipy.stats import linregress
 
 
 class SignalType(Enum):
@@ -299,23 +300,212 @@ class BollingerBandsStrategy(Strategy):
                 strength=min(1.0, (current_price - current_upper) / current_upper),
                 reason=reason
             )
-        elif current_price < current_lower:
-            # 价格跌破下轨，杀跌卖出（较弱势）
-            reason = f"价格({current_price:.2f})创新低"
-            return Signal(
-                symbol=data['symbol'].iloc[-1] if 'symbol' in data.columns else 'unknown',
-                signal_type=SignalType.SELL,
-                price=current_price,
-                timestamp=data.index[-1],
-                strength=min(1.0, (current_lower - current_price) / current_lower),
-                reason=reason
-            )
         else:
             return Signal(
                 symbol=data['symbol'].iloc[-1] if 'symbol' in data.columns else 'unknown',
                 signal_type=SignalType.HOLD,
-                price=current_price,
+                price=data['close'].iloc[-1],
                 timestamp=data.index[-1]
+            )
+
+
+class MomentumStrategy(Strategy):
+    """动量策略"""
+    
+    def __init__(self, period: int = 90, atr_period: int = 20, name: str = "动量策略"):
+        """
+        初始化动量策略
+        
+        Parameters:
+        period: 动量计算周期
+        atr_period: ATR计算周期
+        name: 策略名称
+        """
+        super().__init__(name)
+        self.period = period
+        self.atr_period = atr_period
+        self.full_data = None
+    
+    def set_full_data(self, data: pd.DataFrame):
+        """
+        设置完整数据集
+        
+        Parameters:
+        data: 完整的历史价格数据
+        """
+        self.full_data = data.copy()
+    
+    def calculate_momentum(self, closes: pd.Series) -> Tuple[float, float, float]:
+        """
+        计算动量值及相关统计指标
+        
+        Parameters:
+        closes: 收盘价序列
+        
+        Returns:
+        Tuple[float, float, float]: (动量值, R平方, 斜率)
+        """
+        if len(closes) < self.period:
+            return 0.0, 0.0, 0.0
+        
+        # 计算对数收益率
+        log_prices = np.log(closes.values)
+        x = np.arange(len(log_prices))
+        
+        # 使用线性回归拟合趋势线
+        slope, intercept, r_value, p_value, std_err = linregress(x, log_prices)
+        
+        # 计算决定系数R^2
+        r_squared = r_value ** 2
+        
+        # 年化斜率并乘以R平方作为动量值
+        # 年化因子为252个交易日
+        annualized_return = np.power(np.exp(slope), 252)
+        momentum_value = annualized_return * r_squared
+        
+        return momentum_value, r_squared, slope
+    
+    def calculate_atr(self, data: pd.DataFrame) -> float:
+        """
+        计算ATR指标
+        
+        Parameters:
+        data: 价格数据
+        
+        Returns:
+        float: ATR值
+        """
+        if len(data) < self.atr_period:
+            return 0.0
+        
+        # 使用pandas向量化操作提高效率
+        high = data['high']
+        low = data['low']
+        close = data['close']
+        
+        # 计算真实波幅TR
+        tr1 = high - low
+        tr2 = abs(high - close.shift(1))
+        tr3 = abs(low - close.shift(1))
+        
+        tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
+        
+        # 计算ATR（简单移动平均）
+        atr = tr.rolling(window=self.atr_period).mean().iloc[-1]
+        
+        return atr if not pd.isna(atr) else 0.0
+    
+    def generate_signal(self, data: pd.DataFrame) -> Signal:
+        """
+        生成交易信号
+        
+        Parameters:
+        data: 历史价格数据
+        
+        Returns:
+        Signal: 交易信号
+        """
+        symbol = data['symbol'].iloc[-1] if 'symbol' in data.columns else 'unknown'
+        current_price = data['close'].iloc[-1]
+        timestamp = data.index[-1]
+        
+        # 检查数据长度是否足够
+        required_length = max(self.period, self.atr_period) + 1
+        if len(data) < required_length:
+            debug_info = f"数据不足: 当前{len(data)}条, 需要{required_length}条"
+            print(f"[{self.name}] {debug_info}")
+            return Signal(
+                symbol=symbol,
+                signal_type=SignalType.HOLD,
+                price=current_price,
+                timestamp=timestamp,
+                reason="数据不足"
+            )
+        
+        # 计算动量指标
+        momentum_value, r_squared, slope = self.calculate_momentum(data['close'].tail(self.period))
+        
+        # 计算波动率指标
+        atr_value = self.calculate_atr(data.tail(self.atr_period + 1))
+        
+        # 计算100日移动平均线
+        ma100_series = data['close'].rolling(window=100, min_periods=50).mean()
+        ma100 = ma100_series.iloc[-1] if len(ma100_series) >= 100 else data['close'].mean()
+        
+        # 获取当前持仓
+        current_position = self.position.get(symbol, 0)
+        
+        # 调试信息输出
+        debug_msg = (
+            f"[{self.name}] "
+            f"价格:{current_price:.2f}, "
+            f"动量值:{momentum_value:.4f}, "
+            f"R²:{r_squared:.3f}, "
+            f"斜率:{slope:.6f}, "
+            f"ATR:{atr_value:.2f}, "
+            f"MA100:{ma100:.2f}, "
+            f"持仓:{current_position}"
+        )
+        print(debug_msg)
+        
+        # 生成交易信号逻辑
+        # 买入条件：动量向上且价格在均线之上
+        if current_price > ma100 and momentum_value > 1.02:
+            reason = f"动量强劲 (值:{momentum_value:.4f}, R²:{r_squared:.3f}), 价格高于100日均线 ({current_price:.2f}>{ma100:.2f})"
+            strength = min(1.0, (momentum_value - 1) * 10)  # 增强信号强度
+            return Signal(
+                symbol=symbol,
+                signal_type=SignalType.BUY,
+                price=current_price,
+                timestamp=timestamp,
+                strength=strength,
+                reason=reason
+            )
+        
+        # 卖出条件：多种情况都可能导致卖出
+        elif (current_price < ma100 or 
+              momentum_value < 0.98 or 
+              (current_position > 0 and momentum_value < 1.0)):
+            
+            # 只有当有持仓时才产生卖出信号
+            if current_position > 0:
+                if current_price < ma100:
+                    reason = f"价格跌破100日均线 ({current_price:.2f}<{ma100:.2f}), 触发止损"
+                elif momentum_value < 0.98:
+                    reason = f"动量转弱 (值:{momentum_value:.4f}), 趋势反转"
+                else:
+                    reason = f"动量减弱 (值:{momentum_value:.4f}), 获利了结"
+                
+                strength = min(1.0, (1 - momentum_value) * 10)
+                return Signal(
+                    symbol=symbol,
+                    signal_type=SignalType.SELL,
+                    price=current_price,
+                    timestamp=timestamp,
+                    strength=strength,
+                    reason=reason
+                )
+            else:
+                reason = f"满足卖出条件但无持仓"
+                return Signal(
+                    symbol=symbol,
+                    signal_type=SignalType.HOLD,
+                    price=current_price,
+                    timestamp=timestamp,
+                    reason=reason
+                )
+        
+        # 持有状态
+        else:
+            holding_reason = f"动量稳定 (值:{momentum_value:.4f})"
+            if current_position > 0:
+                holding_reason += f", 当前持仓:{current_position}"
+            return Signal(
+                symbol=symbol,
+                signal_type=SignalType.HOLD,
+                price=current_price,
+                timestamp=timestamp,
+                reason=holding_reason
             )
 
 
