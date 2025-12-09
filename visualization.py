@@ -164,6 +164,39 @@ class Visualizer:
             print(f"胜率: {result.win_rate:.2f}")
             print(f"盈利因子: {result.profit_factor:.2f}")
             print(f"交易次数: {len(result.trades) if hasattr(result, 'trades') and result.trades else 0}")
+            
+            # 如果有股票价格数据，计算并显示股票涨跌幅和回撤信息
+            if hasattr(result, 'price_data') and result.price_data is not None:
+                price_data = result.price_data
+                if not price_data.empty:
+                    # 确定第一个交易点的索引
+                    first_trade_index = 0
+                    if hasattr(result, 'trades') and result.trades:
+                        # 获取第一个交易的时间
+                        first_trade_time = min(trade.timestamp for trade in result.trades)
+                        # 找到最接近该时间的价格数据索引
+                        try:
+                            first_trade_index = price_data.index.get_loc(first_trade_time)
+                        except KeyError:
+                            # 如果找不到确切时间，找到最近的时间
+                            first_trade_index = price_data.index.get_indexer([first_trade_time], method='nearest')[0]
+                        # 确保索引不超过数据范围
+                        first_trade_index = max(0, min(first_trade_index, len(price_data) - 1))
+                    
+                    # 计算从第一个交易点到结束的股票涨跌幅
+                    start_price = price_data['close'].iloc[first_trade_index]
+                    end_price = price_data['close'].iloc[-1]
+                    stock_return = (end_price - start_price) / start_price * 100
+                    
+                    # 计算股票最大回撤（从第一个交易点开始）
+                    price_subset = price_data.iloc[first_trade_index:]
+                    cumulative_returns = (price_subset['close'] / price_subset['close'].iloc[0]) - 1
+                    rolling_max = cumulative_returns.expanding().max()
+                    drawdown = (cumulative_returns - rolling_max) * 100
+                    max_stock_drawdown = drawdown.min()
+                    
+                    print(f"股票涨跌幅: {stock_return:.2f}%")
+                    print(f"股票最大回撤: {max_stock_drawdown:.2f}%")
 
     def print_trade_details_table(self, result: BacktestResult, strategy_name: str):
         """

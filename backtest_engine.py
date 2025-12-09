@@ -199,6 +199,7 @@ class BacktestEngine:
         result = self._calculate_metrics(equity_series, trades)
         result.trades = trades
         result.equity_curve = equity_series
+        result.price_data = data  # 添加价格数据到回测结果中
         
         self.results[strategy.name] = result
         return result
