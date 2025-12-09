@@ -22,6 +22,19 @@ class Visualizer:
     可视化工具类
     """
 
+    def __init__(self, disable_plots=False, disable_summary=False, disable_trade_details=False):
+        """
+        初始化可视化工具
+        
+        Parameters:
+        disable_plots: 是否禁用图表显示
+        disable_summary: 是否禁用摘要信息打印
+        disable_trade_details: 是否禁用详细交易记录打印
+        """
+        self.disable_plots = disable_plots
+        self.disable_summary = disable_summary
+        self.disable_trade_details = disable_trade_details
+
     def plot_equity_curve(self, results: dict, title: str = "策略权益曲线"):
         """
         绘制策略权益曲线
@@ -30,6 +43,9 @@ class Visualizer:
         results: 回测结果字典 {策略名称: BacktestResult}
         title: 图表标题
         """
+        if self.disable_plots:
+            return
+            
         plt.figure(figsize=(12, 6))
         
         has_data = False
@@ -59,6 +75,9 @@ class Visualizer:
         results: 回测结果字典 {策略名称: BacktestResult}
         title: 图表标题
         """
+        if self.disable_plots:
+            return
+            
         plt.figure(figsize=(12, 6))
         
         has_data = False
@@ -89,6 +108,9 @@ class Visualizer:
         price_data: 价格数据
         title: 图表标题
         """
+        if self.disable_plots:
+            return
+            
         if not hasattr(result, 'trades') or result.trades is None or len(result.trades) == 0:
             print("没有交易记录可绘制")
             return
@@ -125,6 +147,9 @@ class Visualizer:
         Parameters:
         results: 回测结果字典 {策略名称: BacktestResult}
         """
+        if self.disable_summary:
+            return
+            
         print("=" * 80)
         print("回测结果摘要".center(80))
         print("=" * 80)
@@ -148,6 +173,9 @@ class Visualizer:
         result: 回测结果
         strategy_name: 策略名称
         """
+        if self.disable_trade_details:
+            return
+            
         if not hasattr(result, 'trades') or not result.trades:
             print("没有交易记录")
             return
@@ -194,6 +222,9 @@ class Visualizer:
         Parameters:
         results: 回测结果字典 {策略名称: BacktestResult}
         """
+        if self.disable_plots:
+            return
+            
         if len(results) < 2:
             print("至少需要两个策略才能进行比较")
             return
@@ -249,17 +280,21 @@ class Visualizer:
         strategy_name: 策略名称
         """
         # 打印摘要
-        self.print_summary({strategy_name: result})
+        if not self.disable_summary:
+            self.print_summary({strategy_name: result})
         
         # 打印详细交易记录
-        self.print_trade_details_table(result, strategy_name)
+        if not self.disable_trade_details:
+            self.print_trade_details_table(result, strategy_name)
         
         # 绘制权益曲线
-        self.plot_equity_curve({strategy_name: result}, f"{strategy_name}权益曲线")
+        if not self.disable_plots:
+            self.plot_equity_curve({strategy_name: result}, f"{strategy_name}权益曲线")
         
         # 绘制回撤曲线
-        if hasattr(result, 'drawdown_curve') and result.drawdown_curve is not None:
+        if not self.disable_plots and hasattr(result, 'drawdown_curve') and result.drawdown_curve is not None:
             self.plot_drawdown_curve({strategy_name: result}, f"{strategy_name}回撤曲线")
         
         # 绘制买卖点
-        self.plot_trades(result, price_data, f"{strategy_name}买卖点标记")
+        if not self.disable_plots:
+            self.plot_trades(result, price_data, f"{strategy_name}买卖点标记")

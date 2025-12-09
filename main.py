@@ -60,30 +60,7 @@ def create_strategy(strategy_name: str, **kwargs) -> object:
     return strategies.get(strategy_name)
 
 
-def run_single_backtest(
-    strategy_name: str,
-    symbol: str,
-    start_date: str,
-    end_date: str,
-    data_source_type: str = "tushare",
-    force_update: bool = False,
-    adj_mode: str = "none",
-    short_window: int = 5,
-    long_window: int = 20,
-    rsi_period: int = 14,
-    rsi_oversold: int = 30,
-    rsi_overbought: int = 70,
-    bb_period: int = 20,
-    bb_std_dev: float = 2,
-    index_code: str = None,
-    initial_capital: float = 100000.0,
-    commission_rate: float = 0.001,
-    warmup_period: int = 100,
-    fixed_quantity: int = None,
-    max_position: int = None,
-    fixed_buy_quantity: int = None,
-    fixed_sell_quantity: int = None
-):
+def run_single_backtest(strategy_name, symbol, start_date, end_date, data_source_type, **kwargs):
     """
     运行单个策略回测
     
@@ -93,22 +70,30 @@ def run_single_backtest(
     start_date: 开始日期
     end_date: 结束日期
     data_source_type: 数据源类型
-    force_update: 是否强制更新数据
-    adj_mode: 复权模式
-    short_window: 短周期
-    long_window: 长周期
-    rsi_period: RSI周期
-    rsi_oversold: RSI超卖阈值
-    rsi_overbought: RSI超买阈值
-    bb_period: 布林带周期
-    bb_std_dev: 布林带标准差倍数
-    index_code: 指数代码
-    initial_capital: 初始资金
-    commission_rate: 手续费率
-    warmup_period: 预热期长度
-    fixed_quantity: 固定交易数量
-    max_position: 最大持仓数量
+    kwargs: 其他参数
     """
+    force_update = kwargs.get('force_update', False)
+    adj_mode = kwargs.get('adj_mode', 'none')
+    index_code = kwargs.get('index_code', None)
+    short_window = kwargs.get('short_window', 5)
+    long_window = kwargs.get('long_window', 20)
+    rsi_period = kwargs.get('rsi_period', 14)
+    rsi_oversold = kwargs.get('rsi_oversold', 30)
+    rsi_overbought = kwargs.get('rsi_overbought', 70)
+    bb_period = kwargs.get('bb_period', 20)
+    bb_std_dev = kwargs.get('bb_std_dev', 2)
+    initial_capital = kwargs.get('initial_capital', 100000.0)
+    commission_rate = kwargs.get('commission_rate', 0.001)
+    warmup_period = kwargs.get('warmup_period', 100)
+    fixed_quantity = kwargs.get('fixed_quantity', None)
+    max_position = kwargs.get('max_position', None)
+    fixed_buy_quantity = kwargs.get('fixed_buy_quantity', None)
+    fixed_sell_quantity = kwargs.get('fixed_sell_quantity', None)
+    # 可视化选项
+    disable_plots = kwargs.get('disable_plots', False)
+    disable_summary = kwargs.get('disable_summary', False)
+    disable_trade_details = kwargs.get('disable_trade_details', False)
+    
     print("=" * 50)
     print("量化策略回测平台 - 单策略回测")
     print("=" * 50)
@@ -159,7 +144,13 @@ def run_single_backtest(
     
     # 打印结果并可视化
     print(f"\n{strategy.name}回测完成")
-    visualizer = Visualizer()
+    visualizer = Visualizer(
+        disable_plots=disable_plots,
+        disable_summary=disable_summary,
+        disable_trade_details=disable_trade_details
+    )
+    
+    # 默认显示所有可视化内容，除非通过命令行参数禁用
     visualizer.plot_backtest_results(result, price_data, strategy.name)
 
 
@@ -407,6 +398,22 @@ def main():
     parser.add_argument('--fixed-sell-quantity', type=int, default=None, 
                        help='固定卖出数量（如果不指定，则使用fixed-quantity或动态仓位）')
     
+    # 可视化选项
+    parser.add_argument('--disable-plots', action='store_true',
+                       help='禁用图表显示')
+    parser.add_argument('--disable-summary', action='store_true',
+                       help='禁用摘要信息打印')
+    parser.add_argument('--disable-trade-details', action='store_true',
+                       help='禁用详细交易记录打印')
+    parser.add_argument('--plot-equity-curve', action='store_true',
+                       help='启用权益曲线图')
+    parser.add_argument('--plot-drawdown-curve', action='store_true',
+                       help='启用回撤曲线图')
+    parser.add_argument('--plot-trades', action='store_true',
+                       help='启用买卖点标记图')
+    parser.add_argument('--plot-performance-comparison', action='store_true',
+                       help='启用策略性能对比图')
+    
     args = parser.parse_args()
     
     if args.mode == 'single':
@@ -437,7 +444,10 @@ def main():
             fixed_quantity=args.fixed_quantity,
             max_position=args.max_position,
             fixed_buy_quantity=args.fixed_buy_quantity,
-            fixed_sell_quantity=args.fixed_sell_quantity
+            fixed_sell_quantity=args.fixed_sell_quantity,
+            disable_plots=args.disable_plots,
+            disable_summary=args.disable_summary,
+            disable_trade_details=args.disable_trade_details
         )
     elif args.mode == 'view':
         if not all([args.symbol, args.start_date, args.end_date]):
@@ -505,31 +515,41 @@ def main():
             print(f"{name}回测完成")
         
         # 6. 可视化结果
-        visualizer = Visualizer()
+        visualizer = Visualizer(
+            disable_plots=args.disable_plots,
+            disable_summary=args.disable_summary,
+            disable_trade_details=args.disable_trade_details
+        )
         
         # 打印摘要报告
-        visualizer.print_summary(results)
+        if not args.disable_summary:
+            visualizer.print_summary(results)
         
         # 打印详细交易记录
-        print("\n" + "=" * 80)
-        print("详细交易记录".center(80))
-        print("=" * 80)
-        for name, result in results.items():
-            visualizer.print_trade_details_table(result, name)
+        if not args.disable_trade_details:
+            print("\n" + "=" * 80)
+            print("详细交易记录".center(80))
+            print("=" * 80)
+            for name, result in results.items():
+                visualizer.print_trade_details_table(result, name)
         
         # 绘制权益曲线
-        visualizer.plot_equity_curve(results, "策略权益曲线对比")
+        if args.plot_equity_curve and not args.disable_plots:
+            visualizer.plot_equity_curve(results, "策略权益曲线对比")
         
         # 绘制回撤曲线
-        visualizer.plot_drawdown_curve(results, "策略回撤曲线对比")
+        if args.plot_drawdown_curve and not args.disable_plots:
+            visualizer.plot_drawdown_curve(results, "策略回撤曲线对比")
         
         # 绘制策略性能对比
-        visualizer.plot_performance_comparison(results)
+        if args.plot_performance_comparison and not args.disable_plots:
+            visualizer.plot_performance_comparison(results)
         
         # 选择一个策略绘制买卖点
-        first_strategy_name = list(results.keys())[0]
-        visualizer.plot_trades(results[first_strategy_name], price_data, 
-                              f"{first_strategy_name}买卖点标记")
+        if args.plot_trades and not args.disable_plots:
+            first_strategy_name = list(results.keys())[0]
+            visualizer.plot_trades(results[first_strategy_name], price_data, 
+                                  f"{first_strategy_name}买卖点标记")
 
 
 if __name__ == "__main__":
