@@ -425,7 +425,14 @@ class BacktestEngine:
                 
         total_pairs = len(sell_trades)
         win_rate = (profitable_trades / total_pairs) if total_pairs > 0 else 0
-        profit_factor = (total_won / total_lost) if total_lost > 0 else float('inf') if total_won > 0 else 0
+        # 修复盈利因子计算逻辑，避免出现inf值
+        if total_lost > 0:
+            profit_factor = total_won / total_lost
+        elif total_won > 0:
+            # 当只有盈利没有亏损时，盈利因子设为total_won（或者一个大的有限值）
+            profit_factor = total_won
+        else:
+            profit_factor = 0
         
         result = BacktestResult(
             total_return=total_return,
