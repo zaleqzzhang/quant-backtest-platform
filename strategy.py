@@ -348,6 +348,54 @@ class SentimentStrategy(Strategy):
         """
         self.full_data = data.copy()
 
+    @staticmethod
+    # 定义通达信 SMA 函数（放在类外或工具模块中）
+    def _sma(src: pd.Series, n: int, m: int) -> pd.Series:
+        result = np.zeros_like(src, dtype=np.float64)
+        # 处理 NaN：找到第一个非 NaN 位置
+        first_valid = src.first_valid_index()
+        if first_valid is None:
+            return pd.Series(np.nan, index=src.index)
+    
+        idx_pos = src.index.get_loc(first_valid)
+        result[:idx_pos] = np.nan
+        result[idx_pos] = src.iloc[idx_pos]
+    
+        for i in range(idx_pos + 1, len(src)):
+            if pd.isna(src.iloc[i]):
+                result[i] = np.nan
+            else:
+                prev_sma = result[i - 1]
+                if pd.isna(prev_sma):
+                    result[i] = src.iloc[i]  # 退化为当前值
+                else:
+                    result[i] = (m * src.iloc[i] + (n - m) * prev_sma) / n
+        return pd.Series(result, index=src.index)
+
+    @staticmethod
+    def _filter_signal(condition: pd.Series, n: int) -> pd.Series:
+        """
+        模拟通达信 FILTER(COND, N)：
+        当 COND 为 True 时，未来 N 个周期内不再触发，第 N+1 周期可再次触发。
+    
+        Parameters:
+            condition: 布尔 Series（信号候选）
+            n: 过滤周期数
+    
+        Returns:
+            filtered: 布尔 Series（实际触发信号）
+        """
+        condition = condition.copy()
+        filtered = pd.Series(False, index=condition.index)
+        last_triggered = -n  # 上次触发位置（索引偏移）
+
+        for i in range(len(condition)):
+            if condition.iloc[i] and (i - last_triggered) >= n:
+                filtered.iloc[i] = True
+                last_triggered = i
+
+        return filtered
+
     def _calculate_indicators(self, data: pd.DataFrame) -> pd.DataFrame:
         """
         计算情绪指标所需的所有指标
@@ -399,16 +447,26 @@ class SentimentStrategy(Strategy):
             # print("警告: 缺少指数数据，使用个股数据代替")
         
         # X_7: 指数相对位置
-        df['HHV_indexH_8'] = df['high_index'].rolling(8).max()
-        df['LLV_indexL_8'] = df['low_index'].rolling(8).min()
+        #df['HHV_indexH_8'] = df['high_index'].rolling(8).max()
+        #df['LLV_indexL_8'] = df['low_index'].rolling(8).min()
+        #denominator = df['HHV_indexH_8'] - df['LLV_indexL_8']
+        #df['X_7'] = np.where((denominator != 0) & (~np.isnan(denominator)), 
+        #                    (df['HHV_indexH_8'] - df['close_index']) / denominator * 8, 
+        #                   0)
+        df['HHV_indexH_8'] = df['high_index'].rolling(8, min_periods=1).max()
+        df['LLV_indexL_8'] = df['low_index'].rolling(8, min_periods=1).min()
         denominator = df['HHV_indexH_8'] - df['LLV_indexL_8']
-        df['X_7'] = np.where((denominator != 0) & (~np.isnan(denominator)), 
-                            (df['HHV_indexH_8'] - df['close_index']) / denominator * 8, 
-                            0)
+        df['X_7'] = (df['HHV_indexH_8'] - df['close_index']) / denominator * 8
+        df['X_7'] = df['X_7'].replace([np.inf, -np.inf], np.nan).ffill().fillna(0)
         
         # X_8: 指数动量
-        df['SMA_X7_18'] = df['X_7'].rolling(18).mean()
-        df['X_8'] = (3 * df['X_7'] - 2 * df['SMA_X7_18']).ewm(span=5, adjust=False).mean()
+        #df['SMA_X7_18'] = df['X_7'].rolling(18).mean()
+        #df['X_7'].rolling(18).mean()
+        #df['X_8'] = (3 * df['X_7'] - 2 * df['SMA_X7_18']).ewm(span=5, adjust=False).mean()
+        df['SMA_X7_18'] = self._sma(df['X_7'], n=18, m=1)
+        df['J_like'] = 3 * df['X_7'] - 2 * df['SMA_X7_18']
+        df['X_8'] = df['J_like'].ewm(span=5, adjust=False).mean()
+
         
         # X_9: 指数超买超卖
         df['X_9'] = np.where((denominator != 0) & (~np.isnan(denominator)),
@@ -424,40 +482,96 @@ class SentimentStrategy(Strategy):
         df['X_15'] = np.where(df['X_13'] <= 0, df['X_13'], 0)
         
         # 情绪数值核心计算
-        df['LLV_LOW_55'] = df['low'].rolling(55).min()
-        df['HHV_HIGH_55'] = df['high'].rolling(55).max()
+        #df['LLV_LOW_55'] = df['low'].rolling(55).min()
+        #df['HHV_HIGH_55'] = df['high'].rolling(55).max()
+        #denominator_55 = df['HHV_HIGH_55'] - df['LLV_LOW_55']
+        #df['RSV'] = np.where((denominator_55 != 0) & (~np.isnan(denominator_55)),
+        #                    (df['close'] - df['LLV_LOW_55']) / denominator_55 * 100,
+        #                    0)
+        df['LLV_LOW_55'] = df['low'].rolling(55, min_periods=1).min()
+        df['HHV_HIGH_55'] = df['high'].rolling(55, min_periods=1).max()
         denominator_55 = df['HHV_HIGH_55'] - df['LLV_LOW_55']
-        df['RSV'] = np.where((denominator_55 != 0) & (~np.isnan(denominator_55)),
-                            (df['close'] - df['LLV_LOW_55']) / denominator_55 * 100,
-                            0)
+        # 更健壮的 RSV 计算（保留 NaN 比填 0 更合理）
+        df['RSV'] = (df['close'] - df['LLV_LOW_55']) / denominator_55 * 100
+        df['RSV'] = df['RSV'].replace([np.inf, -np.inf], np.nan)
+        df['RSV'] = df['RSV'].clip(lower=0, upper=100)  # 理论范围 [0,100]
         
         # 三重平滑处理
-        df['SMA1'] = df['RSV'].ewm(alpha=1/5, adjust=False).mean()
-        df['SMA2'] = df['SMA1'].ewm(alpha=1/3, adjust=False).mean()
+        #df['SMA1'] = df['RSV'].ewm(alpha=1/5, adjust=False).mean()
+        #df['SMA2'] = df['SMA1'].ewm(alpha=1/3, adjust=False).mean()
+        #df['X_16'] = 3 * df['SMA1'] - 2 * df['SMA2']
+        df['SMA1'] = self._sma(df['RSV'], n=5, m=1)      # = SMA(RSV,5,1)
+        df['SMA2'] = self._sma(df['SMA1'], n=3, m=1)     # = SMA(SMA1,3,1)
         df['X_16'] = 3 * df['SMA1'] - 2 * df['SMA2']
         
         # 情绪数值 (核心指标)
         df['ZZZ'] = df['X_16'].ewm(span=3, adjust=False).mean()
-        df['X_17'] = df['ZZZ'].pct_change() * 100
-        
+        df['X_17'] = df['ZZZ'].pct_change() * 100 # 百分比变化
+
         # === 信号生成 ===
-        # 低位反弹信号
-        df['wait_buy'] = (df['ZZZ'] <= 13)
-        df['ready_buy'] = (df['ZZZ'] <= 13) & (df['X_17'] > 13)
-        
-        # 高位风险信号
-        df['wait_sell'] = (df['ZZZ'] > 90) & (df['ZZZ'] > df['ZZZ'].shift(1))
-        df['ready_sell'] = (df['ZZZ'] > 90) & (df['ZZZ'] < df['ZZZ'].shift(1)) & (df['X_6'] < df['X_6'].shift(1))
-        
-        # 复合信号
-        df['now_buy'] = (df['X_14'] > 0) & (df['ZZZ'] < 13)
-        df['now_sell'] = (df['X_15'] < 0) & (df['ZZZ'] > 90)
-        
+        # === 即将反弹（用于绘图，非信号）===
+        df['即将反弹_plot'] = np.where(df['ZZZ'] <= 13, 20, np.nan)  # 高度20，通达信用 STICKLINE(0,20)
+
+        # === X_18: ZZZ <= 13 且 FILTER(..., 15) ===
+        cond_x18 = df['ZZZ'] <= 13
+        df['X_18'] = self._filter_signal(cond_x18, n=15) # 即将反弹
+
+        # === 开始反弹（用于绘图）===
+        cond_start_rebound = (df['ZZZ'] <= 13) & (df['X_17'] > 13)
+        df['开始反弹_plot'] = np.where(cond_start_rebound, 50, np.nan)  # 高度50
+
+        # === X_19: ZZZ<=13 AND X_17>13 AND FILTER(..., 10) ===
+        df['X_19'] = self._filter_signal(cond_start_rebound, n=10) #开始反弹
+
+        # === 卖临界（用于绘图）===
+        cond_sell_critical = (df['ZZZ'] > 90) & (df['ZZZ'] > df['ZZZ'].shift(1))
+        df['卖临界_plot'] = np.where(cond_sell_critical, 95, np.nan)  # 通达信画在 95~100 区间
+
+        # === 风险信号: FILTER(ZZZ>90 AND ZZZ<REF(ZZZ,1) AND X_6<REF(X_6,1), 8) 持续下降 ===
+        cond_risk = (
+            (df['ZZZ'] > 90) &
+            (df['ZZZ'] < df['ZZZ'].shift(1)) &   
+            (df['X_6'] < df['X_6'].shift(1))
+        )
+        df['风险信号'] = self._filter_signal(cond_risk, n=8) #风险信号
+
+        # === X_20: ZZZ>=90 AND X_17 AND FILTER(..., 10) ===
+        # 注意：原公式 "X_17" 应理解为 "X_17 存在且非零"，但通常指 "X_17 有定义"
+        # 更合理解释：ZZZ >= 90 且 ZZZ 开始下降（即 X_17 < 0），但原式写法模糊
+        # 根据上下文，推测应为：ZZZ >= 90 且出现拐点（类似风险信号）
+        # 但按字面：X_17 是数值，不能直接做布尔。此处按常见用法修正为：
+        cond_x20 = (df['ZZZ'] >= 90) & (df['X_17'].notna())  # 或更严格：& (df['X_17'] < 0)
+        # ⚠️ 建议确认原意！这里保守处理为只要 ZZZ>=90 且 X_17 有值就满足
+        df['X_20'] = self._filter_signal(cond_x20, n=10)
+
         # 最终买卖信号
-        df['buy_signal'] = (df['now_buy']) & (df['wait_buy'])
-        df['sell_signal'] = (df['now_sell'])
+        df['buy_signal'] = (df['X_19'])
+        df['sell_signal'] = (df['风险信号']) 
 
         return df
+
+
+        # 低位反弹信号
+        #df['wait_buy'] = (df['ZZZ'] <= 13)
+        #df['ready_buy'] = (df['ZZZ'] <= 13) & (df['X_17'] > 13)
+        
+        # 高位风险信号
+        #df['wait_sell'] = (df['ZZZ'] > 90) & (df['ZZZ'] > df['ZZZ'].shift(1))
+        #df['ready_sell'] = (df['ZZZ'] > 90) & (df['ZZZ'] < df['ZZZ'].shift(1)) & (df['X_6'] < df['X_6'].shift(1))
+        
+        # 复合信号
+        #df['now_buy'] = (df['X_14'] > 0) & (df['ZZZ'] < 13)
+        #df['now_sell'] = (df['X_15'] < 0) & (df['ZZZ'] > 90)
+        
+        # 最终买卖信号
+        #df['buy_signal'] = (df['now_buy'])
+        #df['sell_signal'] = (df['now_sell'])
+        # 添加辅助列：上次买入信号位置
+        #df['buy_candidate'] = (df['ZZZ'] <= 13) & (df['X_17'] > 13) & (df['X_14'] > 0)
+        # 使用 shift 模拟 FILTER(..., 10)
+        #df['buy_signal'] = df['buy_candidate'] & (df['buy_candidate'].rolling(window=10, min_periods=1).sum().gt(1).shift(1))
+
+        #return df
 
     def generate_signal(self, data: pd.DataFrame) -> Signal:
         """
